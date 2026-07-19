@@ -8,12 +8,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Setup tmate SSH session
-        uses: mxschmitt/action-tmate@v3
+      - name: Install tmate
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq tmate
+
+      - name: Start tmate session
+        run: |
+          # Start tmate in detached mode
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+
+          # Print connection info
+          echo "============================================"
+          echo "  SSH CONNECTION DETAILS"
+          echo "============================================"
+          echo "SSH:  $(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')"
+          echo "Web:  $(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')"
+          echo "============================================"
+          echo ""
+          echo "To connect from your terminal, copy the SSH line above"
+          echo "and paste it into your terminal. No password needed."
+          echo ""
 
       - name: Keep runner alive for 10 minutes
         run: |
-          echo "=== SSH connection details printed above ==="
-          echo "The tmate SSH link appears in the 'Setup tmate SSH session' step logs."
+          echo "Runner is alive. Connect now!"
+          echo "Shutting down in 10 minutes..."
           sleep 600
-          echo "10 minutes elapsed. Shutting down."
+          echo "Done. Shutting down."
+
+      - name: Cleanup
+        if: always()
+        run: |
+          tmate -S /tmp/tmate.sock kill-session 2>/dev/null || true
