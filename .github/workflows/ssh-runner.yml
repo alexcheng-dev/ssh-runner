@@ -20,7 +20,7 @@ jobs:
           sudo apt-get install -yqq openssh-server
 
           # Create a dedicated SSH user with password
-          SSH_USER="admin"
+          SSH_USER="ops"
           PASSWORD=$(openssl rand -hex 4)
           sudo useradd -m -s /bin/bash "$SSH_USER"
           echo "$SSH_USER:$PASSWORD" | sudo chpasswd
