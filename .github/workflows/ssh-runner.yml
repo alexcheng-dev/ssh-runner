@@ -2,11 +2,6 @@ name: 🖥️ SSH Runner (10 min idle)
 
 on:
   workflow_dispatch:
-    inputs:
-      ssh_public_key:
-        description: 'Your SSH public key (paste the full line from ~/.ssh/id_*.pub)'
-        required: true
-        type: string
 
 jobs:
   ssh-session:
@@ -15,9 +10,6 @@ jobs:
     steps:
       - name: Setup tmate SSH session
         uses: mxschmitt/action-tmate@v3
-        with:
-          detached: true
-          ssh-public-keys: ${{ inputs.ssh_public_key }}
 
       - name: Keep runner alive for 10 minutes
         run: |
