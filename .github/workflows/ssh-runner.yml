@@ -19,9 +19,13 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -yqq openssh-server
 
-          # Random 8-char password
+          # Create a dedicated SSH user with password
+          SSH_USER="runner"
           PASSWORD=$(openssl rand -hex 4)
-          echo "ubuntu:$PASSWORD" | sudo chpasswd
+          sudo useradd -m -s /bin/bash "$SSH_USER"
+          echo "$SSH_USER:$PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo "$SSH_USER"
+          echo "SSH_USER=$SSH_USER" >> "$GITHUB_ENV"
           echo "PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
 
           # Enable password auth
@@ -60,7 +64,7 @@ jobs:
           echo "  SSH RUNNER READY"
           echo "============================================"
           echo ""
-          echo "  Connect:  ssh ubuntu@bore.pub -p $PORT"
+          echo "  Connect:  ssh $SSH_USER@bore.pub -p $PORT"
           echo "  Password: $PASSWORD"
           echo ""
           echo "============================================"
