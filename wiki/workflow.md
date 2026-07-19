@@ -1,0 +1,62 @@
+# Workflow
+
+## GitHub Actions SSH runner
+
+This repo uses `/Users/igor/Documents/Codex/2026-07-19/alexcheng-dev/.github/workflows/ssh-runner.yml` for short-lived SSH access to a GitHub Actions runner.
+
+Reliable pattern:
+
+1. Download the static `tmate` binary directly from GitHub releases.
+2. Start `tmate` manually and collect the SSH/Web URLs.
+3. Save those URLs into `/tmp/ssh-link.txt`.
+4. Upload `ssh-link.txt` as the `ssh-link` artifact before the 6-hour sleep step.
+
+Why this shape:
+
+- `apt-get`-based setup was unreliable here and could hang.
+- GitHub job logs were not a reliable way to retrieve the live SSH link while the job was still running.
+- The artifact is available immediately after the upload step completes, so it is the best retrieval surface.
+
+## Quick usage
+
+Trigger and fetch a live SSH link:
+
+```bash
+/Users/igor/Documents/Codex/2026-07-19/alexcheng-dev/scripts/ssh-runner-link.sh alexcheng-dev/ssh-runner ssh-runner.yml
+```
+
+The output prints:
+
+- the live `ssh ...@...tmate.io` command
+- the matching `https://tmate.io/t/...` web session URL
+
+## Notes
+
+- The runner stays alive for about 6 hours after the artifact upload step.
+- Node.js was already present on the tested runner image (`node v22.23.1`, `npm 10.9.8` on July 19, 2026).
+
+## Running codexapp safely on the runner
+
+Do not keep `npx codexapp` in the foreground of the interactive tmate shell. If that shell gets `Ctrl-C`, the app stops and any public tunnel to port `5900` starts returning `502`.
+
+Use the local end-to-end launcher instead:
+
+```bash
+./scripts/run-codexapp-worker.sh
+```
+
+What it does:
+
+1. Starts a fresh GitHub Actions SSH runner.
+2. Fetches the live SSH/Web tmate links from the workflow artifact.
+3. Connects to the worker via SSH.
+4. Starts `codexapp` in a detached tmux session on a separate tmux socket:
+
+```bash
+TMUX='' tmux -L codexapp -f /dev/null new-session -d -s codexapp 'npx codexapp > ~/codexapp-tmux.log 2>&1'
+```
+
+5. Downloads `cloudflared` on the worker if needed.
+6. Exposes `http://127.0.0.1:5900` publicly and prints the URL plus the generated password.
+
+If plain `tmux new-session ...` fails with `server version is too old for client`, that is the nested-tmux/socket conflict from running inside tmate; use the separate `-L codexapp -f /dev/null` server above.

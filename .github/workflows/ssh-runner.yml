@@ -1,4 +1,4 @@
-name: 🖥️ SSH Runner (10 min idle)
+name: 🖥️ SSH Runner (6 hour idle)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 jobs:
   ssh-session:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 370
     steps:
       - name: Download and install tmate
         run: |
@@ -39,10 +39,10 @@ jobs:
           path: /tmp/ssh-link.txt
           if-no-files-found: error
 
-      - name: Keep alive 10 min
+      - name: Keep alive 6 hours
         run: |
-          echo "Runner alive for 10 minutes..."
-          sleep 600
+          echo "Runner alive for 6 hours..."
+          sleep 21600
 
       - name: Cleanup
         if: always()
