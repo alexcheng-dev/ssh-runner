@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       ssh_port:
-        description: 'Public port for SSH tunnel (2222, 3333, 4444, etc.)'
-        required: true
+        description: 'Public port (reserved for future use)'
+        required: false
         default: '2222'
         type: string
 
@@ -14,8 +14,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: mxschmitt/action-tmate@v3
-        timeout-minutes: 2
+      - name: Download and install tmate
+        run: |
+          curl -sL "https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-amd64.tar.xz" | tar xJ --strip-components=1 -C /tmp/
+          sudo mv /tmp/tmate /usr/local/bin/
+          echo "tmate installed"
 
-      - name: Keep alive for 10 min
-        run: sleep 600
+      - name: Generate SSH key and start tmate
+        run: |
+          ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+          echo "============================================"
+          echo "  SSH CONNECTION"
+          echo "============================================"
+          echo "SSH: $(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')"
+          echo "Web: $(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')"
+          echo "============================================"
+          echo ""
+          echo "Copy the SSH line above and paste in your terminal."
+          echo ""
+
+      - name: Keep alive 10 min
+        run: |
+          echo "Runner alive for 10 minutes..."
+          sleep 600
+
+      - name: Cleanup
+        if: always()
+        run: |
+          tmate -S /tmp/tmate.sock kill-session 2>/dev/null || true
