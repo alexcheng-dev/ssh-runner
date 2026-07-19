@@ -1,0 +1,23 @@
+name: SSH Runner (10 min idle)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ssh-session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Setup tmate SSH session
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+          detached: true
+
+      - name: Keep runner alive for 10 minutes
+        run: |
+          echo "=== SSH connection details printed above ==="
+          echo "Runner will stay alive for 10 minutes..."
+          echo "Connect via SSH using the tmate link shown in the previous step's logs."
+          sleep 600
+          echo "10 minutes elapsed. Shutting down."
