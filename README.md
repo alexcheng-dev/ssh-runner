@@ -9,7 +9,7 @@ GitHub Actions workflow that runs an Ubuntu runner for 10 minutes with password-
 3. Wait for the `Print connection details` step
 4. Connect from your terminal:
    ```bash
-   ssh runner@bore.pub -p <port>
+   ssh admin@bore.pub -p <port>
    ```
 5. Use the password shown in the workflow logs
 6. The runner auto-terminates after 10 minutes
