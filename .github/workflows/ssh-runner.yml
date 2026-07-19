@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       ssh_port:
-        description: 'Public port on bore.pub for SSH (e.g. 2222, 3333, 4444)'
+        description: 'Public port for SSH tunnel (2222, 3333, 4444, etc.)'
         required: true
         default: '2222'
         type: string
@@ -14,73 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Set up SSH server with password
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -yqq openssh-server
+      - uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 2
 
-          # Create a dedicated SSH user with password
-          SSH_USER="ops"
-          PASSWORD=$(openssl rand -hex 4)
-          sudo useradd -m -s /bin/bash -N "$SSH_USER" 2>/dev/null || sudo useradd -m -s /bin/bash "$SSH_USER"
-          echo "$SSH_USER:$PASSWORD" | sudo chpasswd
-          sudo usermod -aG sudo "$SSH_USER"
-          echo "SSH_USER=$SSH_USER" >> "$GITHUB_ENV"
-          echo "PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
-
-          # Enable password auth
-          sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/^ChallengeResponseAuthentication.*/ChallengeResponseAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/^UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
-
-          # Start sshd directly (service command may hang without systemd)
-          sudo mkdir -p /run/sshd
-          sudo /usr/sbin/sshd -D &
-          sleep 2
-          echo "SSH server started"
-
-      - name: Install bore
-        run: |
-          arch=$(uname -m)
-          case "$arch" in
-            x86_64) arch="x86_64" ;;
-            aarch64) arch="aarch64" ;;
-            armv7l) arch="armv7" ;;
-          esac
-          curl -sL "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-${arch}-unknown-linux-gnu.tar.gz" | tar xz
-          echo "bore installed ($(./bore --version 2>&1))"
-
-      - name: Expose SSH via bore tunnel
-        run: |
-          PORT=${{ inputs.ssh_port }}
-          echo "Exposing SSH on bore.pub:$PORT ..."
-          ./bore local 22 --to bore.pub --port "$PORT" &
-          BORE_PID=$!
-          echo "BORE_PID=$BORE_PID" >> "$GITHUB_ENV"
-          sleep 4
-
-      - name: Print connection details
-        run: |
-          PORT="${{ inputs.ssh_port }}"
-          echo ""
-          echo "============================================"
-          echo "  SSH RUNNER READY"
-          echo "============================================"
-          echo ""
-          echo "  Connect:  ssh $SSH_USER@bore.pub -p $PORT"
-          echo "  Password: $PASSWORD"
-          echo ""
-          echo "============================================"
-          echo ""
-          echo "Runner will stay alive for 10 minutes."
-
-      - name: Keep alive for 10 minutes
-        run: |
-          sleep 600
-          echo "10 minutes elapsed. Shutting down."
-
-      - name: Cleanup bore tunnel
-        if: always()
-        run: |
-          kill "$BORE_PID" 2>/dev/null || true
+      - name: Keep alive for 10 min
+        run: sleep 600
