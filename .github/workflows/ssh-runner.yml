@@ -2,12 +2,6 @@ name: 🖥️ SSH Runner (10 min idle)
 
 on:
   workflow_dispatch:
-    inputs:
-      ssh_port:
-        description: 'Public port (reserved for future use)'
-        required: false
-        default: '2222'
-        type: string
 
 jobs:
   ssh-session:
@@ -18,30 +12,32 @@ jobs:
         run: |
           curl -sL "https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-amd64.tar.xz" | tar xJ --strip-components=1 -C /tmp/
           sudo mv /tmp/tmate /usr/local/bin/
-          echo "tmate installed"
 
       - name: Generate SSH key and start tmate
+        id: tmate
         run: |
           ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
           tmate -S /tmp/tmate.sock new-session -d
           tmate -S /tmp/tmate.sock wait tmate-ready
+          SSH_CMD=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+          WEB_URL=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')
+          echo "ssh-cmd=$SSH_CMD" >> "$GITHUB_OUTPUT"
+          echo "web-url=$WEB_URL" >> "$GITHUB_OUTPUT"
+          echo "$SSH_CMD" > /tmp/ssh-link.txt
+          echo "$WEB_URL" >> /tmp/ssh-link.txt
           echo "============================================"
           echo "  SSH CONNECTION"
           echo "============================================"
-          echo "SSH: $(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')"
-          echo "Web: $(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')"
+          echo "SSH: $SSH_CMD"
+          echo "Web: $WEB_URL"
           echo "============================================"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "# 🖥️ SSH Runner" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**SSH:** \`$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Web:** $(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Runner stays alive for 10 minutes." >> "$GITHUB_STEP_SUMMARY"
-          echo ""
-          echo "Copy the SSH line above and paste in your terminal."
-          echo ""
+
+      - name: Upload SSH link as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-link
+          path: /tmp/ssh-link.txt
+          if-no-files-found: error
 
       - name: Keep alive 10 min
         run: |
