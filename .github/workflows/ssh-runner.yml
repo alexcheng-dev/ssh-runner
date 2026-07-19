@@ -22,7 +22,7 @@ jobs:
           # Create a dedicated SSH user with password
           SSH_USER="ops"
           PASSWORD=$(openssl rand -hex 4)
-          sudo useradd -m -s /bin/bash "$SSH_USER"
+          sudo useradd -m -s /bin/bash -N "$SSH_USER" 2>/dev/null || sudo useradd -m -s /bin/bash "$SSH_USER"
           echo "$SSH_USER:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo "$SSH_USER"
           echo "SSH_USER=$SSH_USER" >> "$GITHUB_ENV"
