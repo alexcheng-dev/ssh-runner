@@ -2,43 +2,77 @@ name: 🖥️ SSH Runner (10 min idle)
 
 on:
   workflow_dispatch:
+    inputs:
+      ssh_port:
+        description: 'Public port on bore.pub for SSH (e.g. 2222, 3333, 4444)'
+        required: true
+        default: '2222'
+        type: string
 
 jobs:
   ssh-session:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Install tmate
+      - name: Set up SSH server with password
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -yq tmate
+          sudo apt-get update -qq
+          sudo apt-get install -yqq openssh-server
 
-      - name: Start tmate session
+          # Random 8-char password
+          PASSWORD=$(openssl rand -hex 4)
+          echo "ubuntu:$PASSWORD" | sudo chpasswd
+          echo "PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+
+          # Enable password auth
+          sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^ChallengeResponseAuthentication.*/ChallengeResponseAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
+
+          sudo service ssh restart
+
+      - name: Install bore
         run: |
-          # Start tmate in detached mode
-          tmate -S /tmp/tmate.sock new-session -d
-          tmate -S /tmp/tmate.sock wait tmate-ready
+          arch=$(uname -m)
+          case "$arch" in
+            x86_64) arch="x86_64" ;;
+            aarch64) arch="aarch64" ;;
+            armv7l) arch="armv7" ;;
+          esac
+          curl -sL "https://github.com/ekzhang/bore/releases/download/v0.5.2/bore-v0.5.2-${arch}-unknown-linux-gnu.tar.gz" | tar xz
+          echo "bore installed ($(./bore --version 2>&1))"
 
-          # Print connection info
+      - name: Expose SSH via bore tunnel
+        run: |
+          PORT=${{ inputs.ssh_port }}
+          echo "Exposing SSH on bore.pub:$PORT ..."
+          ./bore local 22 --to bore.pub --port "$PORT" &
+          BORE_PID=$!
+          echo "BORE_PID=$BORE_PID" >> "$GITHUB_ENV"
+          sleep 4
+
+      - name: Print connection details
+        run: |
+          PORT="${{ inputs.ssh_port }}"
+          echo ""
           echo "============================================"
-          echo "  SSH CONNECTION DETAILS"
-          echo "============================================"
-          echo "SSH:  $(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')"
-          echo "Web:  $(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')"
+          echo "  SSH RUNNER READY"
           echo "============================================"
           echo ""
-          echo "To connect from your terminal, copy the SSH line above"
-          echo "and paste it into your terminal. No password needed."
+          echo "  Connect:  ssh ubuntu@bore.pub -p $PORT"
+          echo "  Password: $PASSWORD"
           echo ""
+          echo "============================================"
+          echo ""
+          echo "Runner will stay alive for 10 minutes."
 
-      - name: Keep runner alive for 10 minutes
+      - name: Keep alive for 10 minutes
         run: |
-          echo "Runner is alive. Connect now!"
-          echo "Shutting down in 10 minutes..."
           sleep 600
-          echo "Done. Shutting down."
+          echo "10 minutes elapsed. Shutting down."
 
-      - name: Cleanup
+      - name: Cleanup bore tunnel
         if: always()
         run: |
-          tmate -S /tmp/tmate.sock kill-session 2>/dev/null || true
+          kill "$BORE_PID" 2>/dev/null || true
