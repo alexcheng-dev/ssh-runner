@@ -34,7 +34,11 @@ jobs:
           sudo sed -i 's/^ChallengeResponseAuthentication.*/ChallengeResponseAuthentication yes/' /etc/ssh/sshd_config
           sudo sed -i 's/^UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
 
-          sudo service ssh restart
+          # Start sshd directly (service command may hang without systemd)
+          sudo mkdir -p /run/sshd
+          sudo /usr/sbin/sshd -D &
+          sleep 2
+          echo "SSH server started"
 
       - name: Install bore
         run: |
