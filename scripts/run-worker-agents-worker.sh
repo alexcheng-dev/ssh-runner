@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="${REPO:-alexcheng-dev/ssh-runner}"
 WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
 APP_DIR="$ROOT_DIR/workerAgents"
+ROUTER_DIR="${ROUTER_DIR:-/Users/igor/Git-projects/9router}"
 APP_PORT="${APP_PORT:-1456}"
 TMP_DIR="$(mktemp -d)"
 RUN_ID=""
@@ -47,6 +48,11 @@ if [[ ! -d "$APP_DIR" ]]; then
   exit 1
 fi
 
+if [[ ! -d "$ROUTER_DIR" ]]; then
+  echo "Missing 9router directory: $ROUTER_DIR" >&2
+  exit 1
+fi
+
 echo "Triggering worker..."
 SSH_RUNNER_META_OUT="$TMP_DIR/ssh-runner-meta.env" ./scripts/ssh-runner-link.sh "$REPO" "$WORKFLOW" > "$TMP_DIR/ssh-link.txt"
 source "$TMP_DIR/ssh-runner-meta.env"
@@ -73,19 +79,36 @@ tar \
   -C "$ROOT_DIR" \
   workerAgents
 
+ROUTER_ARCHIVE_PATH="$TMP_DIR/9router.tgz"
+tar \
+  --exclude='.git' \
+  --exclude='node_modules' \
+  -czf "$ROUTER_ARCHIVE_PATH" \
+  -C "$(dirname "$ROUTER_DIR")" \
+  "$(basename "$ROUTER_DIR")"
+
 REMOTE_SCRIPT="$TMP_DIR/remote-worker-agents-setup.sh"
 cat > "$REMOTE_SCRIPT" <<'EOF'
 set -euo pipefail
 APP_HOME="$HOME/workerAgents"
+ROUTER_HOME="$HOME/9router"
 STATE_DIR="$HOME/.worker-agents"
 mkdir -p "$STATE_DIR" "$HOME/node-http2"
 
 rm -rf "$APP_HOME"
 mkdir -p "$APP_HOME"
 tar -xzf /tmp/workerAgents.tgz -C "$HOME"
+rm -rf "$ROUTER_HOME"
+mkdir -p "$ROUTER_HOME"
+tar -xzf /tmp/9router.tgz -C "$HOME"
 
 cd "$APP_HOME"
 npm install
+cd "$ROUTER_HOME"
+npm install
+if [[ ! -d .next ]]; then
+  npm run build
+fi
 
 if [[ ! -x ~/node-http2/cloudflared ]]; then
   curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ~/node-http2/cloudflared
@@ -93,7 +116,7 @@ if [[ ! -x ~/node-http2/cloudflared ]]; then
 fi
 
 TMUX='' tmux -L workeragents -f /dev/null kill-server 2>/dev/null || true
-TMUX='' tmux -L workeragents -f /dev/null new-session -d -s workeragents "cd \"$APP_HOME\" && PORT=${APP_PORT:-1456} AGENT_CONSOLE_HOST=127.0.0.1 npm start > ~/worker-agents.log 2>&1"
+TMUX='' tmux -L workeragents -f /dev/null new-session -d -s workeragents "cd \"$APP_HOME\" && PORT=${APP_PORT:-1456} AGENT_CONSOLE_HOST=127.0.0.1 WORKER_AGENTS_9ROUTER_DIR=\"$ROUTER_HOME\" npm start > ~/worker-agents.log 2>&1"
 
 for _ in $(seq 1 90); do
   if curl -fsS "http://127.0.0.1:${APP_PORT:-1456}/" >/dev/null 2>&1; then
@@ -139,14 +162,14 @@ echo "PUBLIC_URL=${URL:-}"
 EOF
 
 REMOTE_OUTPUT="$TMP_DIR/remote-output.txt"
-python3 - "$SSH_DEST" "$ARCHIVE_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" <<'PY'
+python3 - "$SSH_DEST" "$ARCHIVE_PATH" "$ROUTER_ARCHIVE_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" <<'PY'
 import base64
 import re
 import subprocess
 import sys
 import time
 
-ssh_dest, archive_path, script_path, out_path, app_port = sys.argv[1:]
+ssh_dest, archive_path, router_archive_path, script_path, out_path, app_port = sys.argv[1:]
 proc = subprocess.Popen(
     [
         "ssh",
@@ -185,6 +208,7 @@ with open(out_path, "w", encoding="utf-8") as outf:
 
     for local_path, remote_b64, remote_out in [
         (archive_path, "/tmp/workerAgents.tgz.b64", "/tmp/workerAgents.tgz"),
+        (router_archive_path, "/tmp/9router.tgz.b64", "/tmp/9router.tgz"),
         (script_path, "/tmp/worker-agents-setup.sh.b64", "/tmp/worker-agents-setup.sh"),
     ]:
         encoded = base64.b64encode(open(local_path, "rb").read()).decode("ascii")
