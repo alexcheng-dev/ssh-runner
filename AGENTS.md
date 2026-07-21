@@ -19,3 +19,4 @@ Keep this file short. Put durable workflow details in `./wiki/*.md` and reusable
 
 - Reuse an already running worker over SSH for investigation and verification before starting a fresh GitHub Actions worker, if a suitable one is still alive.
 - Keep worker tests fast: prefer existing workers, direct SSH CLI checks, and short one-shot prompts over any web UI flow.
+- Do not run multiple concurrent SSH automation sessions against the same tmate worker when output parsing matters. If parallelism is needed, start detached tmux jobs from one SSH session and collect results afterward from files, logs, ports, or tmux state.
