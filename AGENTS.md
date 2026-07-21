@@ -2,6 +2,8 @@
 
 Keep this file short. Put durable workflow details in `./wiki/*.md` and reusable helpers in `./scripts/*.sh`.
 
+- Always git commit completed repo changes unless the user explicitly says not to.
+
 ## Wiki index
 
 - `/Users/igor/Documents/sshworker/wiki/workflow.md` — local workflow notes for the GitHub Actions SSH runner, quick usage, and the Worker Agents submodule.
