@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="${REPO:-alexcheng-dev/ssh-runner}"
 WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
+TUNNEL_CLIENT_PATH="$ROOT_DIR/scripts/lolgames_tunnel.py"
 TMP_DIR="$(mktemp -d)"
 RUN_ID=""
 LAUNCH_OK=0
@@ -37,6 +38,11 @@ require curl
 require python3
 
 cd "$ROOT_DIR"
+if [[ ! -f "$TUNNEL_CLIENT_PATH" ]]; then
+  echo "Missing lolgames tunnel client: $TUNNEL_CLIENT_PATH" >&2
+  exit 1
+fi
+
 mkdir -p "$ROOT_DIR/outputs"
 
 echo "Triggering worker..."
@@ -75,21 +81,12 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 
-if [[ ! -x ~/node-http2/cloudflared ]]; then
-  curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ~/node-http2/cloudflared
-  chmod +x ~/node-http2/cloudflared
-fi
+TUNNEL_PREFIX="${LOLGAMES_TUNNEL_PREFIX:-$(hostname | tr '[:upper:]_' '[:lower:]-' | tr -cd 'a-z0-9-')-$(date +%s)}"
+PUBLIC_NAME="${TUNNEL_PREFIX}-codexapp"
+pkill -f "lolgames_tunnel.py client 127.0.0.1:5900 --server 161.153.109.33 --name ${PUBLIC_NAME} --same-port" 2>/dev/null || true
+nohup python3 /tmp/lolgames_tunnel.py client 127.0.0.1:5900 --server 161.153.109.33 --name "$PUBLIC_NAME" --same-port > ~/codexapp-lolgames.log 2>&1 &
 
-pkill -f 'cloudflared tunnel --url http://127.0.0.1:5900' 2>/dev/null || true
-nohup ~/node-http2/cloudflared tunnel --url http://127.0.0.1:5900 > ~/codexapp-cloudflared.log 2>&1 &
-
-for _ in $(seq 1 60); do
-  URL="$(sed -n 's/.*\(https:\/\/[-a-zA-Z0-9.]*trycloudflare\.com\).*/\1/p' ~/codexapp-cloudflared.log | tail -n 1 || true)"
-  if [[ -n "${URL:-}" ]]; then
-    break
-  fi
-  sleep 2
-done
+URL="http://${PUBLIC_NAME}.lolgames.net:5900"
 
 printf '%s\n' "${URL:-}" > ~/.codex/codexui-public-url
 python3 - "${URL:-}" <<'PY'
@@ -112,20 +109,25 @@ with open(os.path.expanduser("~/.codex/worker-state.json"), "w", encoding="utf-8
     f.write("\n")
 PY
 
-echo "__CODEX_DONE__"
+echo "__CODEX_DONE__${RUN_TOKEN:-}"
 echo "PASSWORD=$(sed -n '1p' ~/.codex/codexui-password 2>/dev/null || true)"
 echo "PUBLIC_URL=${URL:-}"
 EOF
 
 echo "Connecting to worker and provisioning codexapp..."
+RUN_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 REMOTE_OUTPUT="$TMP_DIR/remote-output.txt"
-python3 - "$SSH_DEST" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" <<'PY'
+python3 - "$SSH_DEST" "$REMOTE_SCRIPT" "$TUNNEL_CLIENT_PATH" "$REMOTE_OUTPUT" "$RUN_TOKEN" <<'PY'
+import os
 import re
+import shlex
+import select
+import signal
 import subprocess
 import sys
 import time
 
-ssh_dest, script_path, out_path = sys.argv[1:]
+ssh_dest, script_path, tunnel_client_path, out_path, run_token = sys.argv[1:]
 proc = subprocess.Popen(
     [
         "ssh",
@@ -141,64 +143,108 @@ proc = subprocess.Popen(
     bufsize=1,
 )
 
+def close_proc(interrupt_remote=False):
+    if interrupt_remote:
+        try:
+            proc.stdin.write("\x03\n")
+            proc.stdin.flush()
+            time.sleep(0.2)
+        except Exception:
+            pass
+    proc.kill()
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        pass
+
+def on_interrupt(_signum, _frame):
+    close_proc(interrupt_remote=True)
+    raise SystemExit(130)
+
+signal.signal(signal.SIGINT, on_interrupt)
+signal.signal(signal.SIGTERM, on_interrupt)
+
+def read_chunk(timeout=0.2):
+    fd = proc.stdout.fileno()
+    ready, _, _ = select.select([fd], [], [], timeout)
+    if not ready:
+        return ""
+    data = os.read(fd, 4096)
+    return data.decode("utf-8", errors="ignore") if data else ""
+
 prompt_re = re.compile(r"runner@[^:]+:.*\$ ")
+continuation_re = re.compile(r"(?:^|\n|\r)> ?(?:\x1b\[[0-9;?]*[ -/]*[@-~])*")
+last_ctrl_c = 0.0
 buffer = ""
 started = False
 with open(out_path, "w", encoding="utf-8") as outf:
     deadline = time.time() + 60
     while time.time() < deadline:
-      ch = proc.stdout.read(1)
+      ch = read_chunk()
       if not ch:
-          break
+          continue
       buffer += ch
       outf.write(ch)
       outf.flush()
       if not started and "Press <q> or <ctrl-c> to continue" in buffer:
           proc.stdin.write("q")
           proc.stdin.flush()
+      if continuation_re.search(buffer) and not prompt_re.search(buffer):
+          now = time.time()
+          if now - last_ctrl_c > 1.0:
+              proc.stdin.write("\x03\n")
+              proc.stdin.flush()
+              last_ctrl_c = now
       if prompt_re.search(buffer):
           started = True
           break
     if not started:
+        try:
+            proc.stdin.write("\x03\n")
+            proc.stdin.flush()
+        except Exception:
+            pass
         raise SystemExit("Failed to reach remote shell prompt")
 
-    import base64
-    with open(script_path, "r", encoding="utf-8") as f:
-        encoded = base64.b64encode(f.read().encode("utf-8")).decode("ascii")
+    # Clear any quote/heredoc continuation prompt left by a previous interrupted
+    # tmate automation before sending upload/run commands.
+    proc.stdin.write("\x03\n")
+    proc.stdin.flush()
+    time.sleep(0.2)
 
-    # Avoid pasting a shell heredoc into the interactive tmate terminal. If heredoc
-    # termination is missed, the remote shell stays at a `>` continuation prompt.
-    # Instead, append base64 chunks with simple printf commands, decode, then run.
-    remote_b64 = "/tmp/codexapp-remote-setup.b64"
-    remote_script = "/tmp/codexapp-remote-setup.sh"
-    lines = [f": > {remote_b64}"]
-    for i in range(0, len(encoded), 900):
-        lines.append(f"printf '%s' '{encoded[i:i+900]}' >> {remote_b64}")
-    lines.append(f"base64 -d {remote_b64} > {remote_script}")
-    lines.append(f"bash {remote_script}")
+    import base64
+    lines = []
+    for local_path, remote_b64, remote_out in [
+        (tunnel_client_path, "/tmp/lolgames_tunnel.py.b64", "/tmp/lolgames_tunnel.py"),
+        (script_path, "/tmp/codexapp-remote-setup.b64", "/tmp/codexapp-remote-setup.sh"),
+    ]:
+        encoded = base64.b64encode(open(local_path, "rb").read()).decode("ascii")
+        lines.append(f": > {remote_b64}")
+        for i in range(0, len(encoded), 900):
+            lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> {remote_b64}")
+        lines.append(f"base64 -d {remote_b64} > {remote_out}")
+    lines.append(f"RUN_TOKEN={run_token} bash /tmp/codexapp-remote-setup.sh")
     cmd = "\n".join(lines) + "\n"
     proc.stdin.write(cmd)
     proc.stdin.flush()
 
     done_deadline = time.time() + 360
     while time.time() < done_deadline:
-        ch = proc.stdout.read(1)
+        ch = read_chunk()
         if not ch:
-            break
+            if proc.poll() is not None:
+                break
+            continue
         buffer += ch
         outf.write(ch)
         outf.flush()
-        if "__CODEX_DONE__" in buffer and "trycloudflare.com" in buffer:
+        if f"__CODEX_DONE__{run_token}" in buffer and ".lolgames.net" in buffer:
             break
 
     # Do not send `exit`: in a tmate-backed runner, exiting the shell can tear down
     # the share session and make the freshly printed SSH/Web links unusable. Close
-    # only this local SSH client after the detached tmux/cloudflared processes start.
-    proc.kill()
-    try:
-        proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        pass
+    # only this local SSH client after the detached tmux/lolgames tunnel processes start.
+    close_proc(interrupt_remote=True)
 PY
 
 SANITIZED_OUTPUT="$TMP_DIR/remote-output-clean.txt"
@@ -213,7 +259,24 @@ open(dst, "w", encoding="utf-8").write(data)
 PY
 
 PASSWORD="$(grep -aoE 'PASSWORD=[a-z0-9]+-[a-z0-9]+-[a-z0-9]+' "$SANITIZED_OUTPUT" | sed 's/^PASSWORD=//' | tail -n 1 || true)"
-PUBLIC_URL="$(grep -aoE 'PUBLIC_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^PUBLIC_URL=//' | tail -n 1 || true)"
+PUBLIC_URL="$(grep -aoE 'PUBLIC_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^PUBLIC_URL=//' | tail -n 1 || true)"
+
+if [[ -z "${PUBLIC_URL:-}" || -z "${PASSWORD:-}" ]]; then
+  STATE_FALLBACK="$TMP_DIR/remote-state-fallback.txt"
+  python3 "$ROOT_DIR/tests/lib/ssh_tmate_exec.py" "$SSH_DEST" 'cat ~/.codex/worker-state.json 2>/dev/null || true' --timeout 30 > "$STATE_FALLBACK" 2>/dev/null || true
+  python3 - "$STATE_FALLBACK" "$TMP_DIR/state.env" <<'PY'
+import json, re, sys
+text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+text = re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]', '', text).replace('\r', '')
+match = re.search(r'\{[^{}]*"codex_url"[^{}]*\}', text, re.S)
+data = json.loads(match.group(0)) if match else {}
+with open(sys.argv[2], 'w', encoding='utf-8') as f:
+    f.write(f'PUBLIC_URL={str(data.get("codex_url") or "")}\n')
+    f.write(f'PASSWORD={str(data.get("password") or "")}\n')
+PY
+  # shellcheck disable=SC1090
+  source "$TMP_DIR/state.env" 2>/dev/null || true
+fi
 
 echo
 echo "Worker SSH:"
@@ -248,8 +311,8 @@ PY
 
 if [[ -z "${PUBLIC_URL:-}" ]]; then
   echo
-  echo "Warning: cloudflared URL not found yet. Re-check on the worker:" >&2
-  echo "  tail -60 ~/codexapp-cloudflared.log" >&2
+  echo "Warning: lolgames URL not found yet. Re-check on the worker:" >&2
+  echo "  tail -60 ~/codexapp-lolgames.log" >&2
   exit 1
 fi
 

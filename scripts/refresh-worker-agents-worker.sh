@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$ROOT_DIR/workerAgents"
 APP_PORT="${APP_PORT:-1456}"
+TUNNEL_CLIENT_PATH="$ROOT_DIR/scripts/lolgames_tunnel.py"
 SSH_DEST="${1:-}"
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
@@ -27,6 +28,11 @@ fi
 
 if [[ ! -d "$APP_DIR" ]]; then
   echo "Missing app directory: $APP_DIR" >&2
+  exit 1
+fi
+
+if [[ ! -f "$TUNNEL_CLIENT_PATH" ]]; then
+  echo "Missing lolgames tunnel client: $TUNNEL_CLIENT_PATH" >&2
   exit 1
 fi
 
@@ -91,11 +97,6 @@ set_global_line("chatgpt_base_url", '"http://127.0.0.1:20127/backend-api"')
 path.write_text("\n".join([*globals_, *rest]).rstrip() + "\n", encoding="utf-8")
 PY
 
-if [[ ! -x ~/node-http2/cloudflared ]]; then
-  curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ~/node-http2/cloudflared
-  chmod +x ~/node-http2/cloudflared
-fi
-
 rm -rf "$APP_HOME"
 mkdir -p "$APP_HOME"
 tar -xzf /tmp/workerAgents.tgz -C "$HOME"
@@ -112,22 +113,16 @@ for _ in $(seq 1 90); do
   sleep 2
 done
 
+TUNNEL_PREFIX="${LOLGAMES_TUNNEL_PREFIX:-$(hostname | tr '[:upper:]_' '[:lower:]-' | tr -cd 'a-z0-9-')-$(date +%s)}"
+
 start_tunnel() {
   local name="$1"
   local port="$2"
-  local log_path="$HOME/${name}-cloudflared.log"
-  pkill -f "cloudflared tunnel --url http://127.0.0.1:${port}" 2>/dev/null || true
-  nohup ~/node-http2/cloudflared tunnel --url "http://127.0.0.1:${port}" > "$log_path" 2>&1 &
-  for _ in $(seq 1 90); do
-    local url
-    url="$(sed -n 's/.*\(https:\/\/[-a-zA-Z0-9.]*trycloudflare\.com\).*/\1/p' "$log_path" | tail -n 1 || true)"
-    if [[ -n "${url:-}" ]]; then
-      printf '%s\n' "$url"
-      return 0
-    fi
-    sleep 2
-  done
-  return 1
+  local public_name="${TUNNEL_PREFIX}-${name}"
+  local log_path="$HOME/${name}-lolgames.log"
+  pkill -f "lolgames_tunnel.py client 127.0.0.1:${port} --server 161.153.109.33 --name ${public_name} --same-port" 2>/dev/null || true
+  nohup python3 /tmp/lolgames_tunnel.py client "127.0.0.1:${port}" --server 161.153.109.33 --name "$public_name" --same-port > "$log_path" 2>&1 &
+  printf 'http://%s.lolgames.net:%s\n' "$public_name" "$port"
 }
 
 STATUS_PATH="$STATE_DIR/status.json"
@@ -199,7 +194,7 @@ with open(os.path.join(state_dir, "state.json"), "w", encoding="utf-8") as f:
     f.write("\n")
 PY
 
-echo "__WORKER_AGENTS_DONE__"
+echo "__WORKER_AGENTS_DONE__${RUN_TOKEN:-}"
 echo "PUBLIC_URL=${WORKER_AGENTS_URL:-}"
 echo "ROUTER_URL=${ROUTER_URL:-}"
 echo "CODEX_URL=${CODEX_URL:-}"
@@ -207,15 +202,20 @@ echo "OPENCODE_URL=${OPENCODE_URL:-}"
 echo "HERMES_URL=${HERMES_URL:-}"
 EOF
 
+RUN_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 REMOTE_OUTPUT="$TMP_DIR/remote-output.txt"
-python3 - "$SSH_DEST" "$ARCHIVE_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" <<'PY'
+python3 - "$SSH_DEST" "$ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" <<'PY'
 import base64
+import os
 import re
+import shlex
+import select
+import signal
 import subprocess
 import sys
 import time
 
-ssh_dest, archive_path, script_path, out_path, app_port = sys.argv[1:]
+ssh_dest, archive_path, tunnel_client_path, script_path, out_path, app_port, run_token = sys.argv[1:]
 proc = subprocess.Popen(
     [
         "ssh", "-tt",
@@ -230,56 +230,109 @@ proc = subprocess.Popen(
     bufsize=1,
 )
 
+def close_proc(interrupt_remote=False):
+    if interrupt_remote:
+        try:
+            proc.stdin.write("\x03\n")
+            proc.stdin.flush()
+            time.sleep(0.2)
+        except Exception:
+            pass
+    proc.kill()
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        pass
+
+def on_interrupt(_signum, _frame):
+    close_proc(interrupt_remote=True)
+    raise SystemExit(130)
+
+signal.signal(signal.SIGINT, on_interrupt)
+signal.signal(signal.SIGTERM, on_interrupt)
+
+def read_chunk(timeout=0.2):
+    fd = proc.stdout.fileno()
+    ready, _, _ = select.select([fd], [], [], timeout)
+    if not ready:
+        return ""
+    data = os.read(fd, 4096)
+    return data.decode("utf-8", errors="ignore") if data else ""
+
 prompt_re = re.compile(r"runner@[^:]+:.*\$ ")
+continuation_re = re.compile(r"(?:^|\n|\r)> ?(?:\x1b\[[0-9;?]*[ -/]*[@-~])*")
+last_ctrl_c = 0.0
 buffer = ""
 started = False
 with open(out_path, "w", encoding="utf-8") as outf:
     deadline = time.time() + 60
     while time.time() < deadline:
-        ch = proc.stdout.read(1)
+        ch = read_chunk()
         if not ch:
-            break
+            if proc.poll() is not None:
+                break
+            continue
         buffer += ch
         outf.write(ch)
         outf.flush()
         if not started and "Press <q> or <ctrl-c> to continue" in buffer:
           proc.stdin.write("q")
           proc.stdin.flush()
+        if continuation_re.search(buffer) and not prompt_re.search(buffer):
+          now = time.time()
+          if now - last_ctrl_c > 1.0:
+            proc.stdin.write("\x03\n")
+            proc.stdin.flush()
+            last_ctrl_c = now
         if prompt_re.search(buffer):
             started = True
             break
     if not started:
+        try:
+            proc.stdin.write("\x03\n")
+            proc.stdin.flush()
+        except Exception:
+            pass
         raise SystemExit("Failed to reach remote shell prompt")
+
+    # Clear any quote/heredoc continuation prompt left by a previous interrupted
+    # tmate automation before sending upload/run commands.
+    proc.stdin.write("\x03\n")
+    proc.stdin.flush()
+    time.sleep(0.2)
 
     for local_path, remote_b64, remote_out in [
         (archive_path, "/tmp/workerAgents.tgz.b64", "/tmp/workerAgents.tgz"),
+        (tunnel_client_path, "/tmp/lolgames_tunnel.py.b64", "/tmp/lolgames_tunnel.py"),
         (script_path, "/tmp/refresh-worker-agents-setup.sh.b64", "/tmp/refresh-worker-agents-setup.sh"),
     ]:
         encoded = base64.b64encode(open(local_path, "rb").read()).decode("ascii")
         lines = [f": > {remote_b64}"]
         for i in range(0, len(encoded), 900):
-            lines.append(f"printf '%s' '{encoded[i:i+900]}' >> {remote_b64}")
+            lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> {remote_b64}")
         lines.append(f"base64 -d {remote_b64} > {remote_out}")
         if remote_out.endswith(".sh"):
             lines.append(f"chmod +x {remote_out}")
         proc.stdin.write("\n".join(lines) + "\n")
         proc.stdin.flush()
 
-    proc.stdin.write(f"APP_PORT={app_port} bash /tmp/refresh-worker-agents-setup.sh\n")
+    proc.stdin.write(f"RUN_TOKEN={run_token} APP_PORT={app_port} bash /tmp/refresh-worker-agents-setup.sh\n")
     proc.stdin.flush()
 
     deadline = time.time() + 420
     while time.time() < deadline:
-        ch = proc.stdout.read(1)
+        ch = read_chunk()
         if not ch:
-            break
+            if proc.poll() is not None:
+                break
+            continue
         buffer += ch
         outf.write(ch)
         outf.flush()
-        if "__WORKER_AGENTS_DONE__" in buffer and "trycloudflare.com" in buffer:
+        if f"__WORKER_AGENTS_DONE__{run_token}" in buffer and ".lolgames.net" in buffer:
             break
 
-    proc.kill()
+    close_proc(interrupt_remote=True)
 PY
 
 SANITIZED_OUTPUT="$TMP_DIR/remote-output.clean.txt"
@@ -295,11 +348,32 @@ open(dst, "w", encoding="utf-8").write(text)
 PY
 
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-PUBLIC_URL="$(grep -aoE 'PUBLIC_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^PUBLIC_URL=//' | tail -n 1 || true)"
-ROUTER_URL="$(grep -aoE 'ROUTER_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^ROUTER_URL=//' | tail -n 1 || true)"
-CODEX_URL="$(grep -aoE 'CODEX_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^CODEX_URL=//' | tail -n 1 || true)"
-OPENCODE_URL="$(grep -aoE 'OPENCODE_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^OPENCODE_URL=//' | tail -n 1 || true)"
-HERMES_URL="$(grep -aoE 'HERMES_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^HERMES_URL=//' | tail -n 1 || true)"
+PUBLIC_URL="$(grep -aoE 'PUBLIC_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^PUBLIC_URL=//' | tail -n 1 || true)"
+ROUTER_URL="$(grep -aoE 'ROUTER_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^ROUTER_URL=//' | tail -n 1 || true)"
+CODEX_URL="$(grep -aoE 'CODEX_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^CODEX_URL=//' | tail -n 1 || true)"
+OPENCODE_URL="$(grep -aoE 'OPENCODE_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^OPENCODE_URL=//' | tail -n 1 || true)"
+HERMES_URL="$(grep -aoE 'HERMES_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^HERMES_URL=//' | tail -n 1 || true)"
+
+if [[ -z "${PUBLIC_URL:-}" ]]; then
+  STATE_FALLBACK="$TMP_DIR/remote-state-fallback.txt"
+  python3 "$ROOT_DIR/tests/lib/ssh_tmate_exec.py" "$SSH_DEST" 'cat ~/.worker-agents/state.json 2>/dev/null || true' --timeout 30 > "$STATE_FALLBACK" 2>/dev/null || true
+  python3 - "$STATE_FALLBACK" "$TMP_DIR/state.env" <<'PY'
+import json, re, sys
+text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+text = re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]', '', text).replace('\r', '')
+match = re.search(r'\{[^{}]*"worker_agents_url"[^{}]*\}', text, re.S)
+data = json.loads(match.group(0)) if match else {}
+with open(sys.argv[2], 'w', encoding='utf-8') as f:
+    for key, name in [
+        ('worker_agents_url','PUBLIC_URL'), ('router_url','ROUTER_URL'),
+        ('codex_web_url','CODEX_URL'), ('opencode_url','OPENCODE_URL'),
+        ('hermes_webui_url','HERMES_URL')]:
+        val = str(data.get(key) or '')
+        f.write(f'{name}={val}\n')
+PY
+  # shellcheck disable=SC1090
+  source "$TMP_DIR/state.env" 2>/dev/null || true
+fi
 
 echo "workerAgents public URL:"
 echo "${PUBLIC_URL:-<missing>}"
@@ -333,6 +407,6 @@ with open(out_path, "w", encoding="utf-8") as f:
 PY
 
 if [[ -z "${PUBLIC_URL:-}" ]]; then
-  echo "Warning: workerAgents Cloudflare URL not found yet." >&2
+  echo "Warning: workerAgents lolgames URL not found yet." >&2
   exit 1
 fi

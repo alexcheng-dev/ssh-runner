@@ -68,7 +68,7 @@ That script:
 3. uploads `/Users/igor/Git-projects/9router` and `/Users/igor/Git-projects/hermes-webui`
 4. runs `npm install` and installs `codexapp` plus `opencode-ai`
 5. starts Worker Agents in detached tmux on port `1456`
-6. starts separate `cloudflared` tunnels for Worker Agents, Codex Web Local, OpenCode, and Hermes WebUI
+6. starts separate `*.lolgames.net` tunnels for Worker Agents, Codex Web Local, OpenCode, and Hermes WebUI
 7. saves the result under `./outputs/*-worker-agents.json`
 
 ## Notes
@@ -80,7 +80,8 @@ That script:
 - The worker launcher now preconfigures the child UIs to use local 9Router by default: Codex Web Local gets a seeded custom-endpoint state, OpenCode starts with a stable listed router model (`openai/gpt-5.4-mini`) against `http://127.0.0.1:20127/v1`, and Hermes uses the generated `~/.hermes/config.yaml`.
 - Prefer reusing an already running worker for CLI smoke tests. The repo `tests/` helpers are meant to run fast over SSH against a live worker with short one-shot prompts, not by launching a fresh worker each time.
 - Prefer refreshing the current worker in place over launching a fresh worker whenever possible. Use `scripts/refresh-worker-agents-worker.sh <ssh-destination>` for one-worker updates and only fall back to fresh provisioning when the existing worker is broken beyond quick repair.
-- Do not use `https://...trycloudflare.com:PORT/` for the child UIs. `trycloudflare` does not expose arbitrary origin ports on the same hostname here; start one tunnel per port instead.
+- Child UI links now use `http://<worker-prefix>-<service>.lolgames.net:PORT/` through the lolgames broker instead of `trycloudflare`; each worker gets a unique prefix to avoid hostname collisions. In same-port mode, one hostname can cover all worker ports: `http://<prefix>-9router.lolgames.net:20127` reaches worker port `20127`, and `http://<prefix>-9router.lolgames.net:18923` reaches worker port `18923`.
+- The launchers upload `scripts/lolgames_tunnel.py` to the worker and persist URLs in `~/.worker-agents/state.json` / `~/.codex/worker-state.json` so local parsing can recover if tmate output is delayed.
 - The runner stays alive for about 6 hours after the artifact upload step.
 - Node.js was already present on the tested runner image (`node v22.23.1`, `npm 10.9.8` on July 19, 2026).
 
@@ -91,7 +92,10 @@ That script:
 - The first screen may require sending `q` to dismiss the tmate banner before the shell prompt appears.
 - Avoid sending `exit` at the end of setup: that can tear down the shared tmate session and make the published SSH/Web links unusable.
 - Avoid pasting large heredocs into the interactive session. Echoed input and continuation prompts can break marker-based automation; base64 upload plus decode/run is more reliable here.
-- If you need to inventory a worker later, prefer persisted state files such as `~/.codex/worker-state.json` over scraping transient terminal output or `cloudflared` startup logs.
+- Tmate automation should reset the shell with `Ctrl-C` after attaching and before submitting commands. If local automation is interrupted, send `Ctrl-C` to the remote shell before killing the local SSH client; otherwise the shared shell can remain at a `>` continuation prompt for later sessions.
+- For base64 uploads, prefer quote-free chunks such as `printf %s <base64> >> file` because base64 uses shell-safe characters. Avoid single-quoted chunk commands; an interruption mid-line can leave an unmatched quote and poison the shared tmate shell.
+- If you need to inventory a worker later, prefer persisted state files such as `~/.codex/worker-state.json` over scraping transient terminal output or `lolgames` startup logs.
+- Tmate can close with `[lost server]` or `Internal error` while a workflow run still appears `in_progress`. Automation must treat local SSH EOF as terminal, not keep waiting for markers; pick another live worker or start a fresh one.
 - SSH CLI verification should source the worker shell profiles and use the agent CLIs directly (`codex exec`, `opencode run`, `hermes -z`) instead of driving the web UIs. The repo `tests/` helpers automate that against the interactive tmate shell.
 - When testing through the interactive tmate shell, run only one SSH automation session at a time per worker. Parallel sessions can interleave stale terminal output and create false positives/negatives.
 - I tested parallel SSH automation against the same tmate worker on July 21, 2026 using two concurrent commands that each launched a detached tmux job on its own tmux socket/session. Both remote jobs completed (`parallel-p1.txt` and `parallel-p2.txt` each contained the expected `*:done` marker), so detached tmux can preserve the actual remote work. However, the shared tmate shell still interleaved the submitted command text and status markers, so parallel automation remains unsafe for anything that depends on clean stdout/stderr parsing or reliable command/result pairing.
@@ -122,18 +126,18 @@ What it does:
 TMUX='' tmux -L codexapp -f /dev/null new-session -d -s codexapp 'npx codexapp > ~/codexapp-tmux.log 2>&1'
 ```
 
-5. Downloads `cloudflared` on the worker if needed.
-6. Exposes `http://127.0.0.1:5900` publicly and prints the URL plus the generated password.
+5. Uploads the lolgames tunnel client to the worker.
+6. Exposes `http://127.0.0.1:5900` publicly as `http://<worker-prefix>-codexapp.lolgames.net:5900` and prints the URL plus the generated password.
 
 If plain `tmux new-session ...` fails with `server version is too old for client`, that is the nested-tmux/socket conflict from running inside tmate; use the separate `-L codexapp -f /dev/null` server above.
 
-If the local launcher connects through tmate for setup, do not send `exit` to the remote shell after provisioning. The shell owns the shared tmate session; exiting it can make the fresh `ssh ...@tmate.io` endpoint return `Internal error`. Kill only the local SSH client after `codexapp` and `cloudflared` are detached.
+If the local launcher connects through tmate for setup, do not send `exit` to the remote shell after provisioning. The shell owns the shared tmate session; exiting it can make the fresh `ssh ...@tmate.io` endpoint return `Internal error`. Kill only the local SSH client after `codexapp` and the lolgames tunnel client are detached.
 
 When automating the interactive tmate SSH session, do not paste the remote setup as a heredoc. The terminal can echo the script text, causing marker-based wait loops to match strings like `PUBLIC_URL=` before execution, or leave the remote shell stuck at a `>` continuation prompt. Upload the script as base64 chunks, decode it on the worker, then run it.
 
-When waiting for remote setup completion, require the full Cloudflare hostname marker such as `trycloudflare.com`, not just `PUBLIC_URL=`; output is read character-by-character and can otherwise stop before the URL body is captured.
+When waiting for remote setup completion, require the full lolgames hostname marker such as `.lolgames.net`, not just `PUBLIC_URL=`; output is read character-by-character and can otherwise stop before the URL body is captured.
 
-The worker launcher persists runner state in `~/.codex/worker-state.json` and still writes `~/.codex/codexui-public-url`. Inventory scripts should prefer the JSON state file over scraping transient `cloudflared` startup log lines.
+The worker launcher persists runner state in `~/.codex/worker-state.json` and still writes `~/.codex/codexui-public-url`. Inventory scripts should prefer the JSON state file over scraping transient `lolgames` startup log lines.
 
 ## Worker Agents repo copy
 
@@ -145,3 +149,28 @@ The fork removes the Android project and Android build/release docs, then keeps 
 cd workerAgents
 npm run check
 ```
+
+## Lolgames wildcard tunnel
+
+- `scripts/tunnel.sh localhost:3000 [name]` publishes a local host through the Katie `lolgames-tunnel-micro` broker and prints `http://<name>.lolgames.net`. In same-port mode, requests to `http://<name>.lolgames.net:3000` connect to local port `3000`, requests to `http://<name>.lolgames.net:5173` connect to local port `5173`, and so on.
+- The broker is on `lolgames-micro` (`161.153.109.33`) and receives wildcard DNS for `*.lolgames.net`; do not change the apex `lolgames.net` record for this workflow.
+- The micro redirects inbound TCP `1024-65535` to the broker with iptables while leaving control port `20222` exempt; `lolgames-network.service` reapplies those rules after reboot.
+- HTTP/WebSocket/SSE can share public ports across names via the Host header. Raw TCP still cannot use hostname routing unless the client protocol exposes a hostname, so keep raw TCP in unique-port mode, e.g. `python3 scripts/lolgames_tunnel.py client localhost:9001 --server 161.153.109.33 --name rawone --public-port 43123`.
+- Worker Agents "open" links must preserve the currently viewed public hostname and only change the port. For example, when viewing `http://runnervm3jd5f-...-9router.lolgames.net:20127`, an app running on `127.0.0.1:18923` should open as `http://runnervm3jd5f-...-9router.lolgames.net:18923`, not `http://127.0.0.1:18923/`.
+
+### Standard-port TLS/status
+
+- `status.lolgames.net` is served by Caddy on `lolgames-micro`; both `http://status.lolgames.net/` and `https://status.lolgames.net/` return the static status page.
+- Caddy handles automatic Let's Encrypt certificates for standard ports `80/443`. Use Caddy/Nginx only for named standard-port sites; keep arbitrary `:PORT` tunnel traffic on the broker path.
+- To add another standard HTTPS hostname, add a normal Caddy site block on `lolgames-micro`, make sure DNS resolves to `161.153.109.33`, and reload Caddy.
+
+### Tunnel smoke tests
+
+- `./tests/test-tunnel-websocket.sh` starts a local echo server on port `3010`, publishes it through `scripts/tunnel.sh`, and verifies a public `ws://<name>.lolgames.net:3010/` round-trip.
+- `./tests/test-tunnel-sse.sh` starts a local SSE server on port `3020`, publishes it through `scripts/tunnel.sh`, and verifies streamed `text/event-stream` lines over the public tunnel.
+
+### All-ports hostname mode
+
+- The lolgames tunnel client now uses `--same-port` by default in `scripts/tunnel.sh` and the worker launchers. One registered hostname forwards any public port on that hostname to the same port on the worker/local target host.
+- Example: if Worker Agents is published as `http://<prefix>-worker-agents.lolgames.net:1456`, then `http://<prefix>-worker-agents.lolgames.net:20127/` reaches the worker's local 9Router port too, as long as 9Router is listening locally.
+- Worker Agents rebases “open” links to the current `*.lolgames.net` hostname when accessed through lolgames, so clicking child UI links should stay on the same public hostname and only change the port/path.

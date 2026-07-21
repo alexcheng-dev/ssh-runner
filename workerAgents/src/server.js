@@ -193,11 +193,21 @@ function get9RouterStatus(origin) {
   }
 
   const url = livePort ? `http://127.0.0.1:${livePort}/dashboard/providers` : `http://127.0.0.1:${configuredPort}/dashboard/providers`;
-  const routerUrl = linkState.links?.routerUrl
+  let routerUrl = linkState.links?.routerUrl
     || linkState.agents?.__9router__
     || (livePort && linkState.links?.workerAgentsUrl
       ? linkState.links.workerAgentsUrl.replace(/\/+$/, '') + '/dashboard/providers'
       : url);
+  try {
+    const publicOrigin = new URL(origin);
+    if (livePort && publicOrigin.hostname.endsWith('lolgames.net')) {
+      publicOrigin.port = String(livePort);
+      publicOrigin.pathname = '/dashboard/providers';
+      publicOrigin.search = '';
+      publicOrigin.hash = '';
+      routerUrl = publicOrigin.toString();
+    }
+  } catch {}
 
   return {
     configuredPort,
@@ -269,15 +279,18 @@ function publicAgent(agent, origin) {
   if (!agent?.url) return agent;
   const linkState = refreshAgentsLinks();
   const explicitUrl = linkState.agents?.[agent.id];
-  if (explicitUrl && /^https:\/\/[-a-zA-Z0-9.]+trycloudflare\.com(?:\/|$)/.test(explicitUrl)) return { ...agent, url: explicitUrl };
   try {
-    const rebased = new URL(agent.url);
     const publicOrigin = new URL(origin);
+    if (publicOrigin.hostname.endsWith('lolgames.net')) {
+      const rebased = new URL(agent.url);
+      rebased.protocol = publicOrigin.protocol;
+      rebased.hostname = publicOrigin.hostname;
+      return { ...agent, url: rebased.toString() };
+    }
+    if (explicitUrl && /^https?:\/\/[-a-zA-Z0-9.]+\.lolgames\.net(?::\d+)?(?:\/|$)/.test(explicitUrl)) return { ...agent, url: explicitUrl };
+    const rebased = new URL(agent.url);
     rebased.protocol = publicOrigin.protocol;
     rebased.hostname = publicOrigin.hostname;
-    if (publicOrigin.hostname.endsWith('trycloudflare.com') && rebased.port && rebased.port !== publicOrigin.port) {
-      return agent;
-    }
     return { ...agent, url: rebased.toString() };
   } catch {
     return agent;
