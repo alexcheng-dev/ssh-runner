@@ -50,6 +50,35 @@ if matches:
     print((data.get("codex_password") or "").strip())
 PY
 }
+find_local_lolgames() {
+  local ssh_cmd="$1"
+  local web_url="$2"
+  [[ -d "$OUTPUTS_DIR" ]] || return 0
+  python3 - "$OUTPUTS_DIR" "$ssh_cmd" "$web_url" <<'PY'
+import json
+import pathlib
+import sys
+
+outputs_dir = pathlib.Path(sys.argv[1])
+ssh_cmd = sys.argv[2]
+web_url = sys.argv[3]
+ssh_raw = ssh_cmd.removeprefix("ssh ").strip()
+
+for path in sorted(outputs_dir.glob("*-worker-refresh.json"), reverse=True):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    if data.get("ssh") in (ssh_cmd, ssh_raw) or data.get("worker_agents_url", "").startswith("http://") and web_url and web_url in data.get("worker_agents_url", ""):
+        print((data.get("worker_agents_url") or "").strip())
+        print((data.get("router_url") or "").strip())
+        print((data.get("codex_web_url") or "").strip())
+        print((data.get("opencode_url") or "").strip())
+        print((data.get("hermes_webui_url") or "").strip())
+        break
+PY
+}
+
 
 RUN_IDS="$(gh run list \
   --repo "$REPO" \
@@ -63,6 +92,7 @@ if [[ -z "${RUN_IDS:-}" ]]; then
   echo "No in-progress $WORKFLOW runs found for $REPO."
   exit 0
 fi
+LOLGAMES_FIELDS="worker_agents router codex_web opencode hermes_webui"
 
 while IFS= read -r RUN_ID; do
   [[ -n "$RUN_ID" ]] || continue
@@ -78,6 +108,7 @@ while IFS= read -r RUN_ID; do
   WEB_URL=""
   CODEX_WEB_URL=""
   CODEX_PASSWORD=""
+  LOLGAMES_INFO=""
   if [[ -n "${ARTIFACT_ID:-}" ]]; then
     ZIP_PATH="$TMP_DIR/$RUN_ID.zip"
     OUT_DIR="$TMP_DIR/$RUN_ID"
@@ -90,6 +121,7 @@ while IFS= read -r RUN_ID; do
     LOCAL_INFO="$(find_local_output "$SSH_CMD" "$WEB_URL")"
     CODEX_WEB_URL="$(printf '%s\n' "$LOCAL_INFO" | sed -n '1p')"
     CODEX_PASSWORD="$(printf '%s\n' "$LOCAL_INFO" | sed -n '2p')"
+    LOLGAMES_INFO="$(find_local_lolgames "$SSH_CMD" "$WEB_URL")"
   fi
 
   printf 'run_id\t%s\n' "$RUN_ID"
@@ -99,5 +131,13 @@ while IFS= read -r RUN_ID; do
   printf 'ssh\t%s\n' "${SSH_CMD:-<artifact not ready>}"
   printf 'codex_web\t%s\n' "${CODEX_WEB_URL:-<not running>}"
   printf 'codex_password\t%s\n' "${CODEX_PASSWORD:-<not running>}"
+  if [[ -n "${LOLGAMES_INFO:-}" ]]; then
+    i=0
+    for field in $LOLGAMES_FIELDS; do
+      i=$((i + 1))
+      val="$(printf '%s\n' "$LOLGAMES_INFO" | sed -n "${i}p")"
+      printf 'lolgames_%s\t%s\n' "$field" "${val:-<no tunnel>}"
+    done
+  fi
   printf '\n'
 done <<< "$RUN_IDS"
