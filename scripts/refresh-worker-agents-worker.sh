@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$ROOT_DIR/workerAgents"
+ROUTER_DIR="${ROUTER_DIR:-/Users/igor/Git-projects/9router}"
+ROUTER_GIT_URL="${ROUTER_GIT_URL:-https://github.com/phaneron23/9router.git}"
 APP_PORT="${APP_PORT:-1456}"
 TUNNEL_CLIENT_PATH="$ROOT_DIR/scripts/lolgames_tunnel.py"
 SSH_DEST="${1:-}"
@@ -47,10 +49,26 @@ tar \
   -C "$ROOT_DIR" \
   workerAgents
 
+ROUTER_ARCHIVE_PATH=""
+if [[ "${ROUTER_UPLOAD:-0}" == "1" && -d "$ROUTER_DIR" ]]; then
+  ROUTER_ARCHIVE_PATH="$TMP_DIR/9router.tgz"
+  tar \
+    --exclude='.git' \
+    --exclude='node_modules' \
+    --exclude='.next' \
+    --exclude='.turbo' \
+    --exclude='dist' \
+    --exclude='build' \
+    -czf "$ROUTER_ARCHIVE_PATH" \
+    -C "$(dirname "$ROUTER_DIR")" \
+    "$(basename "$ROUTER_DIR")"
+fi
+
 REMOTE_SCRIPT="$TMP_DIR/refresh-worker-agents-setup.sh"
 cat > "$REMOTE_SCRIPT" <<'EOF'
 set -euo pipefail
 APP_HOME="$HOME/workerAgents"
+ROUTER_HOME="$HOME/9router"
 STATE_DIR="$HOME/.worker-agents"
 mkdir -p "$STATE_DIR" "$HOME/node-http2" "$HOME/.codex"
 
@@ -100,8 +118,22 @@ PY
 rm -rf "$APP_HOME"
 mkdir -p "$APP_HOME"
 tar -xzf /tmp/workerAgents.tgz -C "$HOME"
+if [[ -f /tmp/9router.tgz ]]; then
+  rm -rf "$ROUTER_HOME"
+  tar -xzf /tmp/9router.tgz -C "$HOME"
+elif [[ ! -f "$ROUTER_HOME/package.json" ]]; then
+  rm -rf "$ROUTER_HOME"
+  git clone --depth 1 "$ROUTER_GIT_URL" "$ROUTER_HOME"
+fi
 cd "$APP_HOME"
 npm install
+if [[ -f "$ROUTER_HOME/package.json" ]]; then
+  cd "$ROUTER_HOME"
+  npm install
+  if [[ ! -d .next ]]; then
+    npm run build
+  fi
+fi
 
 TMUX='' tmux -L workeragents -f /dev/null kill-server 2>/dev/null || true
 TMUX='' tmux -L workeragents -f /dev/null new-session -d -s workeragents "cd \"$APP_HOME\" && PORT=${APP_PORT:-1456} AGENT_CONSOLE_HOST=127.0.0.1 WORKER_AGENTS_9ROUTER_DIR=\"$HOME/9router\" WORKER_AGENTS_9ROUTER_PORT=20127 WORKER_AGENTS_9ROUTER_API_KEY=local-dev-key WORKER_AGENTS_9ROUTER_MODEL=openai/gpt-5.4-mini HERMES_WEBUI_DIR=\"$HOME/hermes-webui\" npm start > ~/worker-agents.log 2>&1"
@@ -204,7 +236,7 @@ EOF
 
 RUN_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 REMOTE_OUTPUT="$TMP_DIR/remote-output.txt"
-python3 - "$SSH_DEST" "$ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" <<'PY'
+python3 - "$SSH_DEST" "$ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" "$ROUTER_ARCHIVE_PATH" <<'PY'
 import base64
 import os
 import re
@@ -215,7 +247,7 @@ import subprocess
 import sys
 import time
 
-ssh_dest, archive_path, tunnel_client_path, script_path, out_path, app_port, run_token = sys.argv[1:]
+ssh_dest, archive_path, tunnel_client_path, script_path, out_path, app_port, run_token, router_archive_path = sys.argv[1:]
 proc = subprocess.Popen(
     [
         "ssh", "-tt",
@@ -316,7 +348,16 @@ with open(out_path, "w", encoding="utf-8") as outf:
         proc.stdin.write("\n".join(lines) + "\n")
         proc.stdin.flush()
 
-    proc.stdin.write(f"RUN_TOKEN={run_token} APP_PORT={app_port} bash /tmp/refresh-worker-agents-setup.sh\n")
+    if router_archive_path:
+        encoded = base64.b64encode(open(router_archive_path, "rb").read()).decode("ascii")
+        lines = [": > /tmp/9router.tgz.b64"]
+        for i in range(0, len(encoded), 900):
+            lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> /tmp/9router.tgz.b64")
+        lines.append("base64 -d /tmp/9router.tgz.b64 > /tmp/9router.tgz")
+        proc.stdin.write("\n".join(lines) + "\n")
+        proc.stdin.flush()
+
+    proc.stdin.write(f"RUN_TOKEN={run_token} APP_PORT={app_port} ROUTER_GIT_URL={shlex.quote(os.environ.get('ROUTER_GIT_URL', 'https://github.com/phaneron23/9router.git'))} bash /tmp/refresh-worker-agents-setup.sh\n")
     proc.stdin.flush()
 
     deadline = time.time() + 420

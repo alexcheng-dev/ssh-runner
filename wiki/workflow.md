@@ -82,6 +82,7 @@ That script:
 - Prefer refreshing the current worker in place over launching a fresh worker whenever possible. Use `scripts/refresh-worker-agents-worker.sh <ssh-destination>` for one-worker updates and only fall back to fresh provisioning when the existing worker is broken beyond quick repair.
 - Child UI links now use `http://<worker-prefix>-<service>.lolgames.net:PORT/` through the lolgames broker instead of `trycloudflare`; each worker gets a unique prefix to avoid hostname collisions. In same-port mode, one hostname can cover all worker ports: `http://<prefix>-9router.lolgames.net:20127` reaches worker port `20127`, and `http://<prefix>-9router.lolgames.net:18923` reaches worker port `18923`.
 - The launchers upload `scripts/lolgames_tunnel.py` to the worker and persist URLs in `~/.worker-agents/state.json` / `~/.codex/worker-state.json` so local parsing can recover if tmate output is delayed.
+- After a worker is provisioned, verify the live URLs with `./scripts/verify-lolgames-worker-links.sh "$WORKER_AGENTS_URL" "$ROUTER_URL"` before sharing them.
 - The runner stays alive for about 6 hours after the artifact upload step.
 - Node.js was already present on the tested runner image (`node v22.23.1`, `npm 10.9.8` on July 19, 2026).
 
@@ -168,9 +169,14 @@ npm run check
 
 - `./tests/test-tunnel-websocket.sh` starts a local echo server on port `3010`, publishes it through `scripts/tunnel.sh`, and verifies a public `ws://<name>.lolgames.net:3010/` round-trip.
 - `./tests/test-tunnel-sse.sh` starts a local SSE server on port `3020`, publishes it through `scripts/tunnel.sh`, and verifies streamed `text/event-stream` lines over the public tunnel.
+- `./scripts/verify-lolgames-worker-links.sh <worker-agents-url> [router-url]` verifies live Worker Agents and 9Router links, including same-host cross-port routes like `<worker-host>:20127` and `<router-host>:1456`.
 
 ### All-ports hostname mode
 
 - The lolgames tunnel client now uses `--same-port` by default in `scripts/tunnel.sh` and the worker launchers. One registered hostname forwards any public port on that hostname to the same port on the worker/local target host.
 - Example: if Worker Agents is published as `http://<prefix>-worker-agents.lolgames.net:1456`, then `http://<prefix>-worker-agents.lolgames.net:20127/` reaches the worker's local 9Router port too, as long as 9Router is listening locally.
 - Worker Agents rebases “open” links to the current `*.lolgames.net` hostname when accessed through lolgames, so clicking child UI links should stay on the same public hostname and only change the port/path.
+- A closed local port must not kill an all-ports hostname tunnel. The client should close only that failed connection and keep the control session alive for other ports.
+- The tunnel client reconnects its broker control session after resets. If a public URL starts timing out, inspect `~/worker-agents-lolgames.log` / `~/9router-lolgames.log`; restarting the detached client for the same name restores the same public hostname.
+- The worker launchers clone `https://github.com/phaneron23/9router.git` on the GitHub runner by default instead of pushing the local checkout through tmate. Use `ROUTER_UPLOAD=1` only when you explicitly need to ship a local 9Router checkout; the archive excludes `.next`, `node_modules`, and other build artifacts.
+- On July 21, 2026, the verified live pattern was: `http://<prefix>-worker-agents.lolgames.net:1456/` returns Worker Agents (`200`), `http://<prefix>-worker-agents.lolgames.net:20127/v1/models` reaches 9Router (`401` without API key), and the explicit `http://<prefix>-9router.lolgames.net:20127/v1/models` also reaches 9Router.

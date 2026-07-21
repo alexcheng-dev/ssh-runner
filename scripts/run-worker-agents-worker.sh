@@ -6,6 +6,7 @@ REPO="${REPO:-alexcheng-dev/ssh-runner}"
 WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
 APP_DIR="$ROOT_DIR/workerAgents"
 ROUTER_DIR="${ROUTER_DIR:-/Users/igor/Git-projects/9router}"
+ROUTER_GIT_URL="${ROUTER_GIT_URL:-https://github.com/phaneron23/9router.git}"
 HERMES_WEBUI_DIR="${HERMES_WEBUI_DIR:-/Users/igor/Git-projects/hermes-webui}"
 TUNNEL_CLIENT_PATH="$ROOT_DIR/scripts/lolgames_tunnel.py"
 APP_PORT="${APP_PORT:-1456}"
@@ -50,7 +51,7 @@ if [[ ! -d "$APP_DIR" ]]; then
   exit 1
 fi
 
-if [[ ! -d "$ROUTER_DIR" ]]; then
+if [[ "${ROUTER_UPLOAD:-0}" == "1" && ! -d "$ROUTER_DIR" ]]; then
   echo "Missing 9router directory: $ROUTER_DIR" >&2
   exit 1
 fi
@@ -91,13 +92,20 @@ tar \
   -C "$ROOT_DIR" \
   workerAgents
 
-ROUTER_ARCHIVE_PATH="$TMP_DIR/9router.tgz"
-tar \
-  --exclude='.git' \
-  --exclude='node_modules' \
-  -czf "$ROUTER_ARCHIVE_PATH" \
-  -C "$(dirname "$ROUTER_DIR")" \
-  "$(basename "$ROUTER_DIR")"
+ROUTER_ARCHIVE_PATH=""
+if [[ "${ROUTER_UPLOAD:-0}" == "1" ]]; then
+  ROUTER_ARCHIVE_PATH="$TMP_DIR/9router.tgz"
+  tar \
+    --exclude='.git' \
+    --exclude='node_modules' \
+    --exclude='.next' \
+    --exclude='.turbo' \
+    --exclude='dist' \
+    --exclude='build' \
+    -czf "$ROUTER_ARCHIVE_PATH" \
+    -C "$(dirname "$ROUTER_DIR")" \
+    "$(basename "$ROUTER_DIR")"
+fi
 
 HERMES_ARCHIVE_PATH="$TMP_DIR/hermes-webui.tgz"
 tar \
@@ -180,9 +188,13 @@ start_tunnel() {
 rm -rf "$APP_HOME"
 mkdir -p "$APP_HOME"
 tar -xzf /tmp/workerAgents.tgz -C "$HOME"
-rm -rf "$ROUTER_HOME"
-mkdir -p "$ROUTER_HOME"
-tar -xzf /tmp/9router.tgz -C "$HOME"
+if [[ -f /tmp/9router.tgz ]]; then
+  rm -rf "$ROUTER_HOME"
+  tar -xzf /tmp/9router.tgz -C "$HOME"
+elif [[ ! -f "$ROUTER_HOME/package.json" ]]; then
+  rm -rf "$ROUTER_HOME"
+  git clone --depth 1 "$ROUTER_GIT_URL" "$ROUTER_HOME"
+fi
 rm -rf "$HERMES_WEBUI_HOME"
 mkdir -p "$HERMES_WEBUI_HOME"
 tar -xzf /tmp/hermes-webui.tgz -C "$HOME"
@@ -395,7 +407,6 @@ with open(out_path, "w", encoding="utf-8") as outf:
 
     for local_path, remote_b64, remote_out in [
         (archive_path, "/tmp/workerAgents.tgz.b64", "/tmp/workerAgents.tgz"),
-        (router_archive_path, "/tmp/9router.tgz.b64", "/tmp/9router.tgz"),
         (hermes_archive_path, "/tmp/hermes-webui.tgz.b64", "/tmp/hermes-webui.tgz"),
         (tunnel_client_path, "/tmp/lolgames_tunnel.py.b64", "/tmp/lolgames_tunnel.py"),
         (script_path, "/tmp/worker-agents-setup.sh.b64", "/tmp/worker-agents-setup.sh"),
@@ -410,7 +421,16 @@ with open(out_path, "w", encoding="utf-8") as outf:
         proc.stdin.write("\n".join(lines) + "\n")
         proc.stdin.flush()
 
-    proc.stdin.write(f"RUN_TOKEN={run_token} APP_PORT={app_port} bash /tmp/worker-agents-setup.sh\n")
+    if router_archive_path:
+        encoded = base64.b64encode(open(router_archive_path, "rb").read()).decode("ascii")
+        lines = [": > /tmp/9router.tgz.b64"]
+        for i in range(0, len(encoded), 900):
+            lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> /tmp/9router.tgz.b64")
+        lines.append("base64 -d /tmp/9router.tgz.b64 > /tmp/9router.tgz")
+        proc.stdin.write("\n".join(lines) + "\n")
+        proc.stdin.flush()
+
+    proc.stdin.write(f"RUN_TOKEN={run_token} APP_PORT={app_port} ROUTER_GIT_URL={shlex.quote(os.environ.get('ROUTER_GIT_URL', 'https://github.com/phaneron23/9router.git'))} bash /tmp/worker-agents-setup.sh\n")
     proc.stdin.flush()
 
     deadline = time.time() + 420

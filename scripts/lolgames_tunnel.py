@@ -120,7 +120,7 @@ async def server():
     print(f'broker public:{BROKER_PORT} control:{CONTROL_PORT}', flush=True)
     async with s1,s2: await asyncio.gather(s1.serve_forever(), s2.serve_forever())
 
-async def client(args):
+async def client_once(args):
     target=args.target
     if target.startswith('localhost:'): host='127.0.0.1'; tport=int(target.split(':',1)[1])
     elif ':' in target: host,t=target.rsplit(':',1); tport=int(t)
@@ -144,7 +144,11 @@ async def client(args):
         typ=msg.get('type'); cid=msg.get('id')
         if typ=='open':
             connect_port = int(msg.get('port') or tport) if args.same_port else tport
-            lr,lw=await asyncio.open_connection(host,connect_port)
+            try:
+                lr,lw=await asyncio.open_connection(host,connect_port)
+            except Exception as exc:
+                await send(w, {'type':'close','id':cid,'error':str(exc)}, lock)
+                continue
             conns[cid]=lw
             init=ub64(msg.get('initial',''))
             if init: lw.write(init); await lw.drain()
@@ -154,10 +158,20 @@ async def client(args):
         elif typ=='close' and cid in conns:
             conns.pop(cid).close()
 
+async def client(args):
+    while True:
+        try:
+            await client_once(args)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            raise
+        except Exception as exc:
+            print(f'control connection lost: {exc}; reconnecting in {args.reconnect_delay}s', file=sys.stderr, flush=True)
+        await asyncio.sleep(args.reconnect_delay)
+
 def main():
     p=argparse.ArgumentParser(); sub=p.add_subparsers(dest='cmd', required=True)
     sub.add_parser('server')
-    c=sub.add_parser('client'); c.add_argument('target'); c.add_argument('--server',default='lolgames.net'); c.add_argument('--name'); c.add_argument('--public-port',type=int); c.add_argument('--same-port', action='store_true', help='route any public port on this hostname to the same port on the target host')
+    c=sub.add_parser('client'); c.add_argument('target'); c.add_argument('--server',default='lolgames.net'); c.add_argument('--name'); c.add_argument('--public-port',type=int); c.add_argument('--same-port', action='store_true', help='route any public port on this hostname to the same port on the target host'); c.add_argument('--reconnect-delay', type=float, default=2.0, help='seconds to wait before reconnecting the control session after a broker reset')
     a=p.parse_args()
     asyncio.run(server() if a.cmd=='server' else client(a))
 if __name__=='__main__': main()
