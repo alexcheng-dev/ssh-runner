@@ -112,6 +112,24 @@ HERMES_WEBUI_HOME="$HOME/hermes-webui"
 STATE_DIR="$HOME/.worker-agents"
 mkdir -p "$STATE_DIR" "$HOME/node-http2"
 
+start_tunnel() {
+  local name="$1"
+  local port="$2"
+  local log_path="$HOME/${name}-cloudflared.log"
+  pkill -f "cloudflared tunnel --url http://127.0.0.1:${port}" 2>/dev/null || true
+  nohup ~/node-http2/cloudflared tunnel --url "http://127.0.0.1:${port}" > "$log_path" 2>&1 &
+  for _ in $(seq 1 90); do
+    local url
+    url="$(sed -n 's/.*\(https:\/\/[-a-zA-Z0-9.]*trycloudflare\.com\).*/\1/p' "$log_path" | tail -n 1 || true)"
+    if [[ -n "${url:-}" ]]; then
+      printf '%s\n' "$url"
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 rm -rf "$APP_HOME"
 mkdir -p "$APP_HOME"
 tar -xzf /tmp/workerAgents.tgz -C "$HOME"
@@ -131,6 +149,10 @@ if [[ ! -d .next ]]; then
   npm run build
 fi
 
+if [[ ! -x "$HOME/.local/bin/hermes" ]]; then
+  timeout 180 python3 "$HERMES_WEBUI_HOME/bootstrap.py" --no-browser --foreground --host 127.0.0.1 18935 >/tmp/hermes-bootstrap.log 2>&1 || true
+fi
+
 if [[ ! -x ~/node-http2/cloudflared ]]; then
   curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o ~/node-http2/cloudflared
   chmod +x ~/node-http2/cloudflared
@@ -146,29 +168,68 @@ for _ in $(seq 1 90); do
   sleep 2
 done
 
-pkill -f "cloudflared tunnel --url http://127.0.0.1:${APP_PORT:-1456}" 2>/dev/null || true
-nohup ~/node-http2/cloudflared tunnel --url "http://127.0.0.1:${APP_PORT:-1456}" > ~/worker-agents-cloudflared.log 2>&1 &
-
-for _ in $(seq 1 90); do
-  URL="$(sed -n 's/.*\(https:\/\/[-a-zA-Z0-9.]*trycloudflare\.com\).*/\1/p' ~/worker-agents-cloudflared.log | tail -n 1 || true)"
-  if [[ -n "${URL:-}" ]]; then
-    break
-  fi
-  sleep 2
+for agent_id in codex-web-local opencode hermes-webui; do
+  curl -fsS -X POST "http://127.0.0.1:${APP_PORT:-1456}/api/agents/${agent_id}/restart" >/dev/null || true
+  sleep 8
 done
 
-python3 - "${URL:-}" "${APP_PORT:-1456}" <<'PY'
+STATUS_PATH="$STATE_DIR/status.json"
+curl -fsS "http://127.0.0.1:${APP_PORT:-1456}/api/status" > "$STATUS_PATH"
+
+WORKER_AGENTS_URL="$(start_tunnel worker-agents "${APP_PORT:-1456}" || true)"
+CODEX_PORT="$(python3 - "$STATUS_PATH" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for agent in data.get("agents", []):
+    if agent.get("id") == "codex-web-local" and agent.get("state") == "running":
+        print(agent.get("port", ""))
+        break
+PY
+)"
+OPENCODE_PORT="$(python3 - "$STATUS_PATH" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for agent in data.get("agents", []):
+    if agent.get("id") == "opencode" and agent.get("state") == "running":
+        print(agent.get("port", ""))
+        break
+PY
+)"
+HERMES_PORT="$(python3 - "$STATUS_PATH" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for agent in data.get("agents", []):
+    if agent.get("id") == "hermes-webui" and agent.get("state") == "running":
+        print(agent.get("port", ""))
+        break
+PY
+)"
+
+CODEX_URL=""
+OPENCODE_URL=""
+HERMES_URL=""
+if [[ -n "${CODEX_PORT:-}" ]]; then CODEX_URL="$(start_tunnel codex-web-local "$CODEX_PORT" || true)"; fi
+if [[ -n "${OPENCODE_PORT:-}" ]]; then OPENCODE_URL="$(start_tunnel opencode "$OPENCODE_PORT" || true)"; fi
+if [[ -n "${HERMES_PORT:-}" ]]; then HERMES_URL="$(start_tunnel hermes-webui "$HERMES_PORT" || true)"; fi
+
+python3 - "${WORKER_AGENTS_URL:-}" "${APP_PORT:-1456}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
 import json
 import os
 import sys
 from datetime import datetime, timezone
 
-url = sys.argv[1]
+worker_agents_url = sys.argv[1]
 port = int(sys.argv[2])
+codex_url = sys.argv[3]
+opencode_url = sys.argv[4]
+hermes_url = sys.argv[5]
 state = {
-    "status": "running" if url else "starting",
-    "url": url,
+    "status": "running" if worker_agents_url else "starting",
+    "url": worker_agents_url,
     "port": port,
+    "codex_web_url": codex_url,
+    "opencode_url": opencode_url,
+    "hermes_webui_url": hermes_url,
     "updated_at": datetime.now(timezone.utc).isoformat(),
 }
 state_dir = os.path.expanduser("~/.worker-agents")
@@ -179,7 +240,10 @@ with open(os.path.join(state_dir, "state.json"), "w", encoding="utf-8") as f:
 PY
 
 echo "__WORKER_AGENTS_DONE__"
-echo "PUBLIC_URL=${URL:-}"
+echo "PUBLIC_URL=${WORKER_AGENTS_URL:-}"
+echo "CODEX_URL=${CODEX_URL:-}"
+echo "OPENCODE_URL=${OPENCODE_URL:-}"
+echo "HERMES_URL=${HERMES_URL:-}"
 EOF
 
 REMOTE_OUTPUT="$TMP_DIR/remote-output.txt"
@@ -276,6 +340,9 @@ open(dst, "w", encoding="utf-8").write(data)
 PY
 
 PUBLIC_URL="$(grep -aoE 'PUBLIC_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^PUBLIC_URL=//' | tail -n 1 || true)"
+CODEX_URL="$(grep -aoE 'CODEX_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^CODEX_URL=//' | tail -n 1 || true)"
+OPENCODE_URL="$(grep -aoE 'OPENCODE_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^OPENCODE_URL=//' | tail -n 1 || true)"
+HERMES_URL="$(grep -aoE 'HERMES_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^HERMES_URL=//' | tail -n 1 || true)"
 
 echo
 echo "Worker SSH:"
@@ -283,18 +350,27 @@ echo "$SSH_CMD"
 echo
 echo "workerAgents public URL:"
 echo "${PUBLIC_URL:-<missing>}"
+echo "codex_web public URL:"
+echo "${CODEX_URL:-<missing>}"
+echo "opencode public URL:"
+echo "${OPENCODE_URL:-<missing>}"
+echo "hermes_webui public URL:"
+echo "${HERMES_URL:-<missing>}"
 
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-agents.json" "$SSH_CMD" "${PUBLIC_URL:-}" <<'PY'
+python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-agents.json" "$SSH_CMD" "${PUBLIC_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
 
-out_path, ssh_cmd, public_url = sys.argv[1:]
+out_path, ssh_cmd, public_url, codex_url, opencode_url, hermes_url = sys.argv[1:]
 payload = {
     "created_at": datetime.now(timezone.utc).isoformat(),
     "ssh": ssh_cmd,
     "worker_agents_url": public_url,
+    "codex_web_url": codex_url,
+    "opencode_url": opencode_url,
+    "hermes_webui_url": hermes_url,
 }
 with open(out_path, "w", encoding="utf-8") as f:
     json.dump(payload, f, indent=2)

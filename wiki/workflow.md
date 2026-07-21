@@ -60,7 +60,7 @@ That script:
 3. uploads `/Users/igor/Git-projects/9router` and `/Users/igor/Git-projects/hermes-webui`
 4. runs `npm install` and installs `codexapp` plus `opencode-ai`
 5. starts Worker Agents in detached tmux on port `1456`
-6. exposes it with `cloudflared`
+6. starts separate `cloudflared` tunnels for Worker Agents, Codex Web Local, OpenCode, and Hermes WebUI
 7. saves the result under `./outputs/*-worker-agents.json`
 
 ## Notes
@@ -69,6 +69,7 @@ That script:
 - `scripts/ssh-runner-link.sh` now tries to dedupe dispatch retries: if GitHub returns an error but a fresh run was actually created, the script reuses that run instead of dispatching another one.
 - The launchers auto-cancel the just-created GitHub Actions run on failure by default (`CANCEL_FAILED_RUN=1`) so partial setup errors do not leave a new orphan worker behind.
 - Worker Agents can supervise Codex Web Local, OpenCode, Hermes WebUI, and 9Router on the worker. A fresh Hermes WebUI clone may need the Hermes Agent bootstrap once before `--skip-agent-install` can run non-interactively.
+- Do not use `https://...trycloudflare.com:PORT/` for the child UIs. `trycloudflare` does not expose arbitrary origin ports on the same hostname here; start one tunnel per port instead.
 - The runner stays alive for about 6 hours after the artifact upload step.
 - Node.js was already present on the tested runner image (`node v22.23.1`, `npm 10.9.8` on July 19, 2026).
 
