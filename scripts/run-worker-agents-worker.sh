@@ -78,12 +78,6 @@ if [[ -z "$SSH_CMD" ]]; then
   exit 1
 fi
 
-SSH_DEST="$(printf '%s\n' "$SSH_CMD" | awk '{print $2}')"
-if [[ -z "$SSH_DEST" ]]; then
-  echo "Failed to parse SSH destination from: $SSH_CMD" >&2
-  exit 1
-fi
-
 ARCHIVE_PATH="$TMP_DIR/workerAgents.tgz"
 tar \
   --exclude='.git' \
@@ -315,7 +309,7 @@ EOF
 
 RUN_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 REMOTE_OUTPUT="$TMP_DIR/remote-output.txt"
-python3 - "$SSH_DEST" "$ARCHIVE_PATH" "$ROUTER_ARCHIVE_PATH" "$HERMES_ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" <<'PY'
+python3 - "$SSH_CMD" "$ARCHIVE_PATH" "$ROUTER_ARCHIVE_PATH" "$HERMES_ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" <<'PY'
 import base64
 import os
 import re
@@ -326,15 +320,13 @@ import subprocess
 import sys
 import time
 
-ssh_dest, archive_path, router_archive_path, hermes_archive_path, tunnel_client_path, script_path, out_path, app_port, run_token = sys.argv[1:]
+ssh_cmd, archive_path, router_archive_path, hermes_archive_path, tunnel_client_path, script_path, out_path, app_port, run_token = sys.argv[1:]
+ssh_argv = shlex.split(ssh_cmd)
+if not ssh_argv or ssh_argv[0] != "ssh":
+    raise SystemExit(f"Unsupported SSH command: {ssh_cmd}")
+ssh_argv = [ssh_argv[0], "-tt", *ssh_argv[1:]]
 proc = subprocess.Popen(
-    [
-        "ssh",
-        "-tt",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        ssh_dest,
-    ],
+    ssh_argv,
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
@@ -484,7 +476,26 @@ HERMES_URL="$(grep -aoE 'HERMES_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+
 
 if [[ -z "${PUBLIC_URL:-}" ]]; then
   STATE_FALLBACK="$TMP_DIR/remote-state-fallback.txt"
-  python3 "$ROOT_DIR/tests/lib/ssh_tmate_exec.py" "$SSH_DEST" 'cat ~/.worker-agents/state.json 2>/dev/null || true' --timeout 30 > "$STATE_FALLBACK" 2>/dev/null || true
+  python3 - "$ROOT_DIR" "$SSH_CMD" "$STATE_FALLBACK" <<'PY' || true
+import pathlib
+import shlex
+import subprocess
+import sys
+
+root_dir = pathlib.Path(sys.argv[1])
+ssh_cmd = sys.argv[2]
+out_path = pathlib.Path(sys.argv[3])
+remote_cmd = "cat ~/.worker-agents/state.json 2>/dev/null || true"
+if "tmate.io" in ssh_cmd:
+    dest = ssh_cmd.removeprefix("ssh ").strip()
+    argv = [str(root_dir / "tests" / "lib" / "ssh_tmate_exec.py"), dest, remote_cmd, "--timeout", "30"]
+    timeout = 45
+else:
+    argv = shlex.split(ssh_cmd) + [remote_cmd]
+    timeout = 20
+proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout, check=False)
+out_path.write_text(proc.stdout or "", encoding="utf-8")
+PY
   python3 - "$STATE_FALLBACK" "$TMP_DIR/state.env" <<'PY'
 import json, re, sys
 text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()

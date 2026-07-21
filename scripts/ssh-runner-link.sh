@@ -92,6 +92,27 @@ fi
 gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" > "$TMP_DIR/artifact.zip"
 unzip -qo "$TMP_DIR/artifact.zip" -d "$TMP_DIR"
 
+SSH_LINK_PATH="$TMP_DIR/ssh-link.txt"
+if [[ -f "$TMP_DIR/id_ed25519" ]]; then
+  ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+  KEY_DIR="$ROOT_DIR/outputs/keys"
+  mkdir -p "$KEY_DIR"
+  KEY_PATH="$KEY_DIR/${RUN_ID}_id_ed25519"
+  cp "$TMP_DIR/id_ed25519" "$KEY_PATH"
+  chmod 600 "$KEY_PATH"
+  python3 - "$SSH_LINK_PATH" "$KEY_PATH" <<'PY'
+import pathlib
+import sys
+
+link_path = pathlib.Path(sys.argv[1])
+key_path = pathlib.Path(sys.argv[2])
+lines = link_path.read_text(encoding="utf-8").splitlines()
+if lines:
+    lines[0] = lines[0].replace("-i ./id_ed25519", f"-i {key_path}")
+link_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+fi
+
 if [[ -n "${SSH_RUNNER_META_OUT:-}" ]]; then
   {
     printf 'RUN_ID=%s\n' "$RUN_ID"
@@ -100,4 +121,4 @@ if [[ -n "${SSH_RUNNER_META_OUT:-}" ]]; then
   } > "$SSH_RUNNER_META_OUT"
 fi
 
-cat "$TMP_DIR/ssh-link.txt"
+cat "$SSH_LINK_PATH"

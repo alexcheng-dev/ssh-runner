@@ -6,16 +6,17 @@ This repo uses `/Users/igor/Documents/sshworker/.github/workflows/ssh-runner.yml
 
 Reliable pattern:
 
-1. Download the static `tmate` binary directly from GitHub releases.
-2. Start `tmate` manually and collect the SSH/Web URLs.
-3. Save those URLs into `/tmp/ssh-link.txt`.
-4. Upload `ssh-link.txt` as the `ssh-link` artifact before the 6-hour sleep step.
+1. Start `sshd` on the GitHub runner on local port `2222`.
+2. Start `scripts/lolgames_tunnel.py` in raw TCP mode with a unique public port.
+3. Save the `ssh -i ... -p <port> runner@<name>.lolgames.net` command into `/tmp/ssh-link.txt`.
+4. Upload `ssh-link.txt` and the generated temporary private key as the `ssh-link` artifact before the 6-hour sleep step.
 
 Why this shape:
 
-- `apt-get`-based setup was unreliable here and could hang.
+- Tmate can return `Internal error` / web `503` while the GitHub Actions job still appears `in_progress`; lolgames gives us our own SSH TCP path.
 - GitHub job logs were not a reliable way to retrieve the live SSH link while the job was still running.
 - The artifact is available immediately after the upload step completes, so it is the best retrieval surface.
+- SSH is raw TCP, so each runner SSH tunnel uses a unique public port; it cannot share one public port by hostname like HTTP traffic can.
 
 ## Quick usage
 
@@ -27,10 +28,10 @@ Trigger and fetch a live SSH link:
 
 The output prints:
 
-- the live `ssh ...@...tmate.io` command
-- the matching `https://tmate.io/t/...` web session URL
+- the live `ssh -i /path/to/key -p <port> runner@<name>.lolgames.net` command
+- the matching GitHub Actions run URL
 
-Do not rely on the tmate web session URL for this workflow. In practice it was returning `503` here and was not usable; prefer the SSH session and the Codex Web URL.
+Do not rely on tmate for this workflow. In practice tmate SSH returned `Internal error` and the tmate web URL returned `503` while the workflow still showed `in_progress`.
 
 List all currently running worker instances and their live SSH links when the
 `ssh-link` artifact is already available:
@@ -39,7 +40,7 @@ List all currently running worker instances and their live SSH links when the
 ./scripts/list-running-workers.sh
 ```
 
-The listing script prints SSH plus the live Codex Web Cloudflare URL and the current Codex Web password. It intentionally does not print the tmate web URL because that surface was consistently unusable here.
+The listing script prints SSH, the GitHub Actions run creation time, and live lolgames worker URLs if the runner SSH state is reachable.
 
 Inspect one worker directly:
 
