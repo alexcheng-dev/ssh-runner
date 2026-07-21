@@ -8,6 +8,8 @@ PROBE_TIMEOUT="${PROBE_TIMEOUT:-8}"
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+OUTPUTS_DIR="$ROOT_DIR/outputs"
 
 require() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -19,8 +21,35 @@ require() {
 require gh
 require python3
 require unzip
-require ssh
-INSPECT_SCRIPT="$(cd "$(dirname "$0")" && pwd)/inspect-worker.sh"
+find_local_output() {
+  local ssh_cmd="$1"
+  local web_url="$2"
+  [[ -d "$OUTPUTS_DIR" ]] || return 0
+  python3 - "$OUTPUTS_DIR" "$ssh_cmd" "$web_url" <<'PY'
+import json
+import pathlib
+import sys
+
+outputs_dir = pathlib.Path(sys.argv[1])
+ssh_cmd = sys.argv[2]
+web_url = sys.argv[3]
+
+matches = []
+for path in sorted(outputs_dir.glob("*-worker.json"), reverse=True):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    if data.get("ssh") == ssh_cmd or data.get("web") == web_url:
+        matches.append(data)
+        break
+
+if matches:
+    data = matches[0]
+    print((data.get("codex_url") or "").strip())
+    print((data.get("codex_password") or "").strip())
+PY
+}
 
 RUN_IDS="$(gh run list \
   --repo "$REPO" \
@@ -58,12 +87,9 @@ while IFS= read -r RUN_ID; do
     SSH_CMD="$(sed -n '1p' "$OUT_DIR/ssh-link.txt" 2>/dev/null || true)"
     WEB_URL="$(sed -n '2p' "$OUT_DIR/ssh-link.txt" 2>/dev/null || true)"
 
-    SSH_DEST="$(printf '%s\n' "$SSH_CMD" | awk '{print $2}' 2>/dev/null || true)"
-    if [[ -n "${SSH_DEST:-}" ]]; then
-      REMOTE_INFO="$(PROBE_TIMEOUT="$PROBE_TIMEOUT" "$INSPECT_SCRIPT" "$SSH_DEST" 2>/dev/null || true)"
-      CODEX_WEB_URL="$(python3 -c 'import json,sys; s=sys.stdin.read().strip(); print(json.loads(s).get("codex_url","")) if s else None' <<<"$REMOTE_INFO" 2>/dev/null || true)"
-      CODEX_PASSWORD="$(python3 -c 'import json,sys; s=sys.stdin.read().strip(); print(json.loads(s).get("password","")) if s else None' <<<"$REMOTE_INFO" 2>/dev/null || true)"
-    fi
+    LOCAL_INFO="$(find_local_output "$SSH_CMD" "$WEB_URL")"
+    CODEX_WEB_URL="$(printf '%s\n' "$LOCAL_INFO" | sed -n '1p')"
+    CODEX_PASSWORD="$(printf '%s\n' "$LOCAL_INFO" | sed -n '2p')"
   fi
 
   printf 'run_id\t%s\n' "$RUN_ID"

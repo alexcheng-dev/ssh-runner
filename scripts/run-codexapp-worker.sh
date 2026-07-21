@@ -78,15 +78,19 @@ for _ in $(seq 1 60); do
 done
 
 printf '%s\n' "${URL:-}" > ~/.codex/codexui-public-url
-python3 - <<'PY'
+python3 - "${URL:-}" <<'PY'
 import json
 import os
+import sys
 from datetime import datetime, timezone
 
+url = sys.argv[1]
+password_path = os.path.expanduser("~/.codex/codexui-password")
+password = open(password_path, "r", encoding="utf-8").readline().strip() if os.path.exists(password_path) else ""
 state = {
-    "status": "running" if os.path.exists(os.path.expanduser("~/.codex/codexui-password")) and os.environ.get("URL") else "starting",
-    "codex_url": os.environ.get("URL", ""),
-    "password": open(os.path.expanduser("~/.codex/codexui-password"), "r", encoding="utf-8").readline().strip() if os.path.exists(os.path.expanduser("~/.codex/codexui-password")) else "",
+    "status": "running" if password and url else "starting",
+    "codex_url": url,
+    "password": password,
     "updated_at": datetime.now(timezone.utc).isoformat(),
 }
 with open(os.path.expanduser("~/.codex/worker-state.json"), "w", encoding="utf-8") as f:
