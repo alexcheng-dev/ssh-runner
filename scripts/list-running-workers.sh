@@ -22,8 +22,7 @@ require unzip
 require ./tests/lib/ssh_tmate_exec.py
 find_remote_lolgames() {
   local ssh_cmd="$1"
-  local ssh_dest="${ssh_cmd#ssh }"
-  python3 - "$ROOT_DIR" "$ssh_dest" <<'PY'
+  python3 - "$ROOT_DIR" "$ssh_cmd" <<'PY'
 import json
 import pathlib
 import re
@@ -129,8 +128,11 @@ while IFS= read -r RUN_ID; do
       KEY_PATH="$KEY_DIR/${RUN_ID}_id_ed25519"
       cp "$OUT_DIR/id_ed25519" "$KEY_PATH"
       chmod 600 "$KEY_PATH"
-      SSH_CMD="${SSH_CMD/-i .\\/id_ed25519/-i $KEY_PATH}"
-      SSH_CMD="${SSH_CMD/-i ./id_ed25519/-i $KEY_PATH}"
+      SSH_CMD="$(python3 - "$SSH_CMD" "$KEY_PATH" <<'PY'
+import sys
+print(sys.argv[1].replace("-i ./id_ed25519", f"-i {sys.argv[2]}"))
+PY
+)"
     fi
     LOLGAMES_INFO="$(find_remote_lolgames "$SSH_CMD")"
   fi
