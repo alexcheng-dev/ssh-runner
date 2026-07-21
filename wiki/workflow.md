@@ -37,6 +37,9 @@ List all currently running worker instances and their live SSH/Web links when th
 ./scripts/list-running-workers.sh
 ```
 
+The listing script also tries to query each worker for a live Codex Web
+Cloudflare URL and the current Codex Web password.
+
 ## Notes
 
 - If GitHub returns a transient `HTTP 500: Failed to run workflow dispatch`, retrying a few seconds later usually works; `scripts/ssh-runner-link.sh` retries dispatch up to 3 times.

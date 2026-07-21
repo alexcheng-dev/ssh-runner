@@ -17,6 +17,7 @@ require() {
 require gh
 require python3
 require unzip
+require ssh
 
 RUN_IDS="$(gh run list \
   --repo "$REPO" \
@@ -43,6 +44,8 @@ while IFS= read -r RUN_ID; do
 
   SSH_CMD=""
   WEB_URL=""
+  CODEX_WEB_URL=""
+  CODEX_PASSWORD=""
   if [[ -n "${ARTIFACT_ID:-}" ]]; then
     ZIP_PATH="$TMP_DIR/$RUN_ID.zip"
     OUT_DIR="$TMP_DIR/$RUN_ID"
@@ -51,6 +54,20 @@ while IFS= read -r RUN_ID; do
     unzip -qo "$ZIP_PATH" -d "$OUT_DIR"
     SSH_CMD="$(sed -n '1p' "$OUT_DIR/ssh-link.txt" 2>/dev/null || true)"
     WEB_URL="$(sed -n '2p' "$OUT_DIR/ssh-link.txt" 2>/dev/null || true)"
+
+    SSH_DEST="$(printf '%s\n' "$SSH_CMD" | awk '{print $2}' 2>/dev/null || true)"
+    if [[ -n "${SSH_DEST:-}" ]]; then
+      REMOTE_INFO="$(ssh \
+        -o BatchMode=yes \
+        -o ConnectTimeout=8 \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        "$SSH_DEST" \
+        "CODEX_URL=\$(sed -n 's/.*\\(https:\\/\\/[-a-zA-Z0-9.]*trycloudflare\\.com\\).*/\\1/p' ~/codexapp-cloudflared.log 2>/dev/null | tail -n 1 || true); CODEX_PASSWORD=\$(sed -n '1p' ~/.codex/codexui-password 2>/dev/null || true); printf 'codex_url\\t%s\\ncodex_password\\t%s\\n' \"\$CODEX_URL\" \"\$CODEX_PASSWORD\"" \
+        2>/dev/null || true)"
+      CODEX_WEB_URL="$(printf '%s\n' "$REMOTE_INFO" | awk -F '\t' '$1=="codex_url"{print $2}' | tail -n 1)"
+      CODEX_PASSWORD="$(printf '%s\n' "$REMOTE_INFO" | awk -F '\t' '$1=="codex_password"{print $2}' | tail -n 1)"
+    fi
   fi
 
   printf 'run_id\t%s\n' "$RUN_ID"
@@ -59,5 +76,7 @@ while IFS= read -r RUN_ID; do
   printf 'run_url\t%s\n' "$RUN_URL"
   printf 'ssh\t%s\n' "${SSH_CMD:-<artifact not ready>}"
   printf 'web\t%s\n' "${WEB_URL:-<artifact not ready>}"
+  printf 'codex_web\t%s\n' "${CODEX_WEB_URL:-<not running>}"
+  printf 'codex_password\t%s\n' "${CODEX_PASSWORD:-<not running>}"
   printf '\n'
 done <<< "$RUN_IDS"
