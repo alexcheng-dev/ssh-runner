@@ -30,6 +30,13 @@ The output prints:
 - the live `ssh ...@...tmate.io` command
 - the matching `https://tmate.io/t/...` web session URL
 
+List all currently running worker instances and their live SSH/Web links when the
+`ssh-link` artifact is already available:
+
+```bash
+./scripts/list-running-workers.sh
+```
+
 ## Notes
 
 - If GitHub returns a transient `HTTP 500: Failed to run workflow dispatch`, retrying a few seconds later usually works; `scripts/ssh-runner-link.sh` retries dispatch up to 3 times.
