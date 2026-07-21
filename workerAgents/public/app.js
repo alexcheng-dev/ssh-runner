@@ -15,12 +15,38 @@ function agentStateClass(agent) {
   return ['running', 'starting', 'stopping', 'error'].includes(agent.state) ? agent.state : '';
 }
 
+function publicAgentUrl(agent) {
+  if (!agent?.port) return agent?.url || '#';
+  try {
+    const source = new URL(agent.url || '/', window.location.href);
+    const target = new URL(window.location.href);
+    target.port = String(agent.port);
+    target.pathname = source.pathname || '/';
+    target.search = source.search || '';
+    target.hash = source.hash || '';
+    return target.toString();
+  } catch {
+    return agent.url || '#';
+  }
+}
+
+function displayAgentUrl(agent) {
+  return publicAgentUrl(agent);
+}
+
 function updateAuth(auth, router) {
   const codexNote = auth.loggedIn ? ' Legacy Codex credentials are present.' : '';
   const livePort = router?.livePort || router?.configuredPort || 20127;
   const state = router?.state || 'unknown';
   authTitle.textContent = `9Router ${state}`;
-  if (providersLink && router?.url) providersLink.href = router.url;
+  if (providersLink) {
+    const target = new URL(window.location.href);
+    target.port = String(livePort);
+    target.pathname = '/dashboard/providers';
+    target.search = '';
+    target.hash = '';
+    providersLink.href = target.toString();
+  }
   if (router?.error) {
     authDetail.textContent = `${router.error} Default model: opencode/big-pickle.${codexNote}`;
     return;
@@ -31,6 +57,7 @@ function updateAuth(auth, router) {
 function renderAgent(agent) {
   const busy = ['starting', 'stopping'].includes(agent.state);
   const canOpen = agent.state === 'running';
+  const openUrl = publicAgentUrl(agent);
   const article = document.createElement('article');
   article.className = 'agent-card';
   article.innerHTML = `
@@ -40,7 +67,7 @@ function renderAgent(agent) {
         <div class="agent-meta">
           <span>Port</span><code>${agent.port}</code>
           <span>PID</span><code>${agent.pid || '-'}</code>
-          <span>URL</span><code>${escapeHtml(agent.url)}</code>
+          <span>URL</span><code>${escapeHtml(displayAgentUrl(agent))}</code>
         </div>
       </div>
       <span class="state ${agentStateClass(agent)}">${escapeHtml(agent.state)}</span>
@@ -48,8 +75,8 @@ function renderAgent(agent) {
     <div class="agent-actions">
       <button class="button primary" data-action="start" data-id="${agent.id}" ${busy || agent.state === 'running' ? 'disabled' : ''}>Start</button>
       <button class="button ghost" data-action="restart" data-id="${agent.id}" ${busy ? 'disabled' : ''}>Restart</button>
-      <a class="button ghost" href="${escapeAttribute(agent.url)}" ${canOpen ? '' : 'aria-disabled="true"'}>Open</a>
-      <a class="button ghost" href="${escapeAttribute(agent.url)}" target="_blank" rel="noreferrer" ${canOpen ? '' : 'aria-disabled="true"'}>Web</a>
+      <a class="button ghost" href="${escapeAttribute(openUrl)}" ${canOpen ? '' : 'aria-disabled="true"'}>Open</a>
+      <a class="button ghost" href="${escapeAttribute(openUrl)}" target="_blank" rel="noreferrer" ${canOpen ? '' : 'aria-disabled="true"'}>Web</a>
       <button class="button ghost" data-action="logs" data-id="${agent.id}">Logs</button>
     </div>
     ${agent.error ? `<p class="muted">${escapeHtml(agent.error)}</p>` : ''}

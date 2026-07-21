@@ -47,7 +47,12 @@ function build9RouterLaunchCommand(port = 20127) {
     'mkdir -p "$DATA_DIR"',
     `cd "${routerDir}"`,
     'if [ ! -f .next/standalone/server.js ]; then npm run build; fi',
-    'exec node .next/standalone/server.js'
+    'mkdir -p .next/standalone/.next',
+    'rm -rf .next/standalone/.next/static .next/standalone/public',
+    'if [ -d .next/static ]; then cp -R .next/static .next/standalone/.next/static; fi',
+    'if [ -d public ]; then cp -R public .next/standalone/public; fi',
+    'cd .next/standalone',
+    'exec node server.js'
   ].join('; ');
 }
 

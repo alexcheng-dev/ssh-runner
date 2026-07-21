@@ -48,7 +48,10 @@ def rand_name():
 async def handle_control(r,w):
     hello=await recv(r)
     if not hello or hello.get('type')!='register':
-        w.close(); await w.wait_closed(); return
+        w.close()
+        try: await w.wait_closed()
+        except Exception: pass
+        return
     sub=hello.get('subdomain') or rand_name()
     sub=sub.replace('.'+DOMAIN,'').lower()
     port=int(hello.get('public_port', 0))
@@ -62,11 +65,16 @@ async def handle_control(r,w):
         while True:
             msg=await recv(r)
             if msg is None: break
+            if msg.get('type') == 'ping':
+                await send(w, {'type':'pong'}, lock)
+                continue
             q=REG.get(('conn', msg.get('id')))
             if q: await q.put(msg)
     finally:
         CTRL_BY_KEY.pop(key,None)
-        w.close(); await w.wait_closed()
+        w.close()
+        try: await w.wait_closed()
+        except Exception: pass
 
 async def handle_public(r,w):
     sock=w.get_extra_info('socket')
@@ -95,12 +103,22 @@ async def handle_public(r,w):
         w.write(b'HTTP/1.1 502 Bad Gateway\r\ncontent-type: text/plain\r\ncontent-length: '+str(len(body)).encode()+b'\r\n\r\n'+body)
         await w.drain(); w.close(); await w.wait_closed(); return
     cr,cw,lock=ctrl; cid=''.join(random.choice(string.ascii_letters+string.digits) for _ in range(12)); q=asyncio.Queue(); REG[('conn',cid)]=q
-    await send(cw, {'type':'open','id':cid,'port':port,'host':host,'initial':b64(initial)}, lock)
+    try:
+        await send(cw, {'type':'open','id':cid,'port':port,'host':host,'initial':b64(initial)}, lock)
+    except Exception:
+        REG.pop(('conn',cid),None)
+        w.close()
+        try: await w.wait_closed()
+        except Exception: pass
+        return
     async def pub_to_cli():
-        while True:
-            data=await r.read(32768)
-            if not data: break
-            await send(cw, {'type':'data','id':cid,'data':b64(data)}, lock)
+        try:
+            while True:
+                data=await r.read(32768)
+                if not data: break
+                await send(cw, {'type':'data','id':cid,'data':b64(data)}, lock)
+        finally:
+            await q.put({'type':'close'})
     async def cli_to_pub():
         try:
             while True:
@@ -109,7 +127,11 @@ async def handle_public(r,w):
                 elif msg.get('type')=='close': break
         finally:
             w.close()
-    await asyncio.gather(pub_to_cli(), cli_to_pub(), return_exceptions=True)
+    t1=asyncio.create_task(pub_to_cli())
+    t2=asyncio.create_task(cli_to_pub())
+    await asyncio.wait({t1,t2}, return_when=asyncio.FIRST_COMPLETED)
+    for t in (t1,t2): t.cancel()
+    await asyncio.gather(t1,t2, return_exceptions=True)
     REG.pop(('conn',cid),None)
     try: await w.wait_closed()
     except Exception: pass
@@ -130,6 +152,10 @@ async def client_once(args):
     lock=asyncio.Lock(); conns={}
     await send(w, {'type':'register','subdomain':args.name,'public_port':public_port,'display_port':tport}, lock)
     msg=await recv(r); print(msg['url'], flush=True)
+    async def keepalive():
+        while True:
+            await asyncio.sleep(args.keepalive_interval)
+            await send(w, {'type':'ping'}, lock)
     async def pump_local(cid, lr):
         try:
             while True:
@@ -138,25 +164,35 @@ async def client_once(args):
                 await send(w, {'type':'data','id':cid,'data':b64(data)}, lock)
         finally:
             await send(w, {'type':'close','id':cid}, lock)
-    while True:
-        msg=await recv(r)
-        if msg is None: break
-        typ=msg.get('type'); cid=msg.get('id')
-        if typ=='open':
-            connect_port = int(msg.get('port') or tport) if args.same_port else tport
-            try:
-                lr,lw=await asyncio.open_connection(host,connect_port)
-            except Exception as exc:
-                await send(w, {'type':'close','id':cid,'error':str(exc)}, lock)
+    ka=asyncio.create_task(keepalive())
+    try:
+        while True:
+            msg=await recv(r)
+            if msg is None: break
+            typ=msg.get('type'); cid=msg.get('id')
+            if typ=='pong':
                 continue
-            conns[cid]=lw
-            init=ub64(msg.get('initial',''))
-            if init: lw.write(init); await lw.drain()
-            asyncio.create_task(pump_local(cid,lr))
-        elif typ=='data' and cid in conns:
-            conns[cid].write(ub64(msg['data'])); await conns[cid].drain()
-        elif typ=='close' and cid in conns:
-            conns.pop(cid).close()
+            if typ=='open':
+                connect_port = int(msg.get('port') or tport) if args.same_port else tport
+                try:
+                    lr,lw=await asyncio.open_connection(host,connect_port)
+                except Exception as exc:
+                    await send(w, {'type':'close','id':cid,'error':str(exc)}, lock)
+                    continue
+                conns[cid]=lw
+                init=ub64(msg.get('initial',''))
+                if init: lw.write(init); await lw.drain()
+                asyncio.create_task(pump_local(cid,lr))
+            elif typ=='data' and cid in conns:
+                conns[cid].write(ub64(msg['data'])); await conns[cid].drain()
+            elif typ=='close' and cid in conns:
+                conns.pop(cid).close()
+    finally:
+        ka.cancel()
+        await asyncio.gather(ka, return_exceptions=True)
+        w.close()
+        try: await w.wait_closed()
+        except Exception: pass
 
 async def client(args):
     while True:
@@ -171,7 +207,7 @@ async def client(args):
 def main():
     p=argparse.ArgumentParser(); sub=p.add_subparsers(dest='cmd', required=True)
     sub.add_parser('server')
-    c=sub.add_parser('client'); c.add_argument('target'); c.add_argument('--server',default='lolgames.net'); c.add_argument('--name'); c.add_argument('--public-port',type=int); c.add_argument('--same-port', action='store_true', help='route any public port on this hostname to the same port on the target host'); c.add_argument('--reconnect-delay', type=float, default=2.0, help='seconds to wait before reconnecting the control session after a broker reset')
+    c=sub.add_parser('client'); c.add_argument('target'); c.add_argument('--server',default='lolgames.net'); c.add_argument('--name'); c.add_argument('--public-port',type=int); c.add_argument('--same-port', action='store_true', help='route any public port on this hostname to the same port on the target host'); c.add_argument('--reconnect-delay', type=float, default=2.0, help='seconds to wait before reconnecting the control session after a broker reset'); c.add_argument('--keepalive-interval', type=float, default=10.0, help='seconds between control-session pings')
     a=p.parse_args()
     asyncio.run(server() if a.cmd=='server' else client(a))
 if __name__=='__main__': main()

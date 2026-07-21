@@ -216,6 +216,21 @@ const metaPort = document.querySelector('#metaPort');
 agentIdLabel.textContent = LAUNCH_AGENT;
 
 let foundAgentUrl = '';
+
+function publicAgentUrl(agent) {
+  if (!agent || !agent.port) return agent?.url || '#';
+  try {
+    const source = new URL(agent.url || '/', window.location.href);
+    const target = new URL(window.location.href);
+    target.port = String(agent.port);
+    target.pathname = source.pathname || '/';
+    target.search = source.search || '';
+    target.hash = source.hash || '';
+    return target.toString();
+  } catch {
+    return agent.url || '#';
+  }
+}
 let setupDone = false;
 
 // ── Setup phase ──
@@ -268,10 +283,10 @@ function setState(state, agent) {
   stateBadge.textContent = state.charAt(0).toUpperCase() + state.slice(1);
 
   if (state === 'running' && agent && agent.url) {
-    foundAgentUrl = agent.url;
-    openBtn.href = agent.url;
+    foundAgentUrl = publicAgentUrl(agent);
+    openBtn.href = foundAgentUrl;
     openBtn.removeAttribute('disabled');
-    openBrowserBtn.href = agent.url;
+    openBrowserBtn.href = foundAgentUrl;
     openBrowserBtn.removeAttribute('disabled');
     openBtn.textContent = 'Open ' + (agent.name || LAUNCH_AGENT);
   }
