@@ -47,6 +47,21 @@ Inspect one worker directly:
 ./scripts/inspect-worker.sh <ssh-destination>
 ```
 
+Launch `workerAgents` on a fresh worker by uploading the local repo copy instead of starting Codex Web Local:
+
+```bash
+./scripts/run-worker-agents-worker.sh
+```
+
+That script:
+
+1. starts a fresh SSH runner
+2. uploads `/Users/igor/Documents/sshworker/workerAgents`
+3. runs `npm install`
+4. starts Worker Agents in detached tmux on port `1456`
+5. exposes it with `cloudflared`
+6. saves the result under `./outputs/*-worker-agents.json`
+
 ## Notes
 
 - If GitHub returns a transient `HTTP 500: Failed to run workflow dispatch`, retrying a few seconds later usually works; `scripts/ssh-runner-link.sh` retries dispatch up to 3 times.
