@@ -57,14 +57,47 @@ while IFS= read -r RUN_ID; do
 
     SSH_DEST="$(printf '%s\n' "$SSH_CMD" | awk '{print $2}' 2>/dev/null || true)"
     if [[ -n "${SSH_DEST:-}" ]]; then
-      REMOTE_INFO="$(ssh \
-        -o BatchMode=yes \
-        -o ConnectTimeout=8 \
-        -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null \
-        "$SSH_DEST" \
-        "CODEX_URL=\$(sed -n 's/.*\\(https:\\/\\/[-a-zA-Z0-9.]*trycloudflare\\.com\\).*/\\1/p' ~/codexapp-cloudflared.log 2>/dev/null | tail -n 1 || true); CODEX_PASSWORD=\$(sed -n '1p' ~/.codex/codexui-password 2>/dev/null || true); printf 'codex_url\\t%s\\ncodex_password\\t%s\\n' \"\$CODEX_URL\" \"\$CODEX_PASSWORD\"" \
-        2>/dev/null || true)"
+      REMOTE_INFO="$(
+        python3 - "$SSH_DEST" <<'PY'
+import re
+import subprocess
+import sys
+
+ssh_dest = sys.argv[1]
+cmd = (
+    "q"
+    "CODEX_URL=$(sed -n 's/.*\\(https://[-a-zA-Z0-9.]*trycloudflare\\.com\\).*/\\1/p' ~/codexapp-cloudflared.log 2>/dev/null | tail -n 1 || true); "
+    "CODEX_PASSWORD=$(sed -n '1p' ~/.codex/codexui-password 2>/dev/null || true); "
+    "printf 'codex_url\\t%s\\ncodex_password\\t%s\\n' \"$CODEX_URL\" \"$CODEX_PASSWORD\"\n"
+    "exit\n"
+)
+try:
+    proc = subprocess.run(
+        [
+            "ssh",
+            "-tt",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=8",
+            ssh_dest,
+        ],
+        input=cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    output = proc.stdout
+except subprocess.TimeoutExpired as exc:
+    output = exc.stdout or ""
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="ignore")
+
+clean = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", output).replace("\r", "")
+print(clean)
+PY
+      )"
       CODEX_WEB_URL="$(printf '%s\n' "$REMOTE_INFO" | awk -F '\t' '$1=="codex_url"{print $2}' | tail -n 1)"
       CODEX_PASSWORD="$(printf '%s\n' "$REMOTE_INFO" | awk -F '\t' '$1=="codex_password"{print $2}' | tail -n 1)"
     fi
