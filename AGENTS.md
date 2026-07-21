@@ -15,7 +15,7 @@ Keep this file short. Put durable workflow details in `./wiki/*.md` and reusable
 - `/Users/igor/Documents/sshworker/scripts/list-running-workers.sh` — list in-progress workflow runs and print their live SSH/Web links when the artifact is ready.
 - `/Users/igor/Documents/sshworker/scripts/inspect-worker.sh` — inspect one worker over interactive tmate SSH and print its persisted Codex worker state JSON.
 - `/Users/igor/Documents/sshworker/scripts/tunnel.sh` — publish a local port through `*.lolgames.net` via the Katie `lolgames-micro` broker.
-- `/Users/igor/Documents/sshworker/scripts/verify-lolgames-worker-links.sh` — verify Worker Agents and 9Router `*.lolgames.net` URLs across same-host and cross-port tunnel routes.
+- `/Users/igor/Documents/sshworker/scripts/verify-lolgames-worker-links.sh` — verify the Worker Agents `*.lolgames.net` URL and same-host cross-port routes.
 
 ## Tunnel testing
 

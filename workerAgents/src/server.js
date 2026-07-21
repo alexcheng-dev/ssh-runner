@@ -7,7 +7,7 @@ import { execSync } from 'node:child_process';
 import { config, defaultPath } from './config.js';
 import { createLoginUrl, exchangeCodeForTokens, getAuthStatus, logout } from './auth.js';
 import { supervisor } from './agents.js';
-import { ensureSshd, runSetup, getSetupStatus, onSetupEvent, refreshAgentsLinks, syncSkills } from './setup.js';
+import { ensureSshd, runSetup, getSetupStatus, onSetupEvent, syncSkills } from './setup.js';
 
 const publicDir = path.join(config.projectRoot, 'public');
 const contentTypes = new Map([
@@ -180,7 +180,6 @@ function kill9RouterListeners() {
 }
 
 function get9RouterStatus(origin) {
-  const linkState = refreshAgentsLinks();
   const configuredPort = parseHermes9RouterPort();
   const listener = ROUTER_PORTS.map((port) => ({ port, row: findListenerForPort(port) })).find((item) => item.row);
   const livePort = listener?.port || null;
@@ -198,14 +197,10 @@ function get9RouterStatus(origin) {
   }
 
   const url = livePort ? `http://127.0.0.1:${livePort}/dashboard/providers` : `http://127.0.0.1:${configuredPort}/dashboard/providers`;
-  let routerUrl = linkState.links?.routerUrl
-    || linkState.agents?.__9router__
-    || (livePort && linkState.links?.workerAgentsUrl
-      ? linkState.links.workerAgentsUrl.replace(/\/+$/, '') + '/dashboard/providers'
-      : url);
+  let routerUrl = url;
   try {
     const publicOrigin = new URL(origin);
-    if (livePort && publicOrigin.hostname.endsWith('lolgames.net')) {
+    if (livePort) {
       publicOrigin.port = String(livePort);
       publicOrigin.pathname = '/dashboard/providers';
       publicOrigin.search = '';
@@ -282,17 +277,8 @@ function requestOrigin(req) {
 
 function publicAgent(agent, origin) {
   if (!agent?.url) return agent;
-  const linkState = refreshAgentsLinks();
-  const explicitUrl = linkState.agents?.[agent.id];
   try {
     const publicOrigin = new URL(origin);
-    if (publicOrigin.hostname.endsWith('lolgames.net')) {
-      const rebased = new URL(agent.url);
-      rebased.protocol = publicOrigin.protocol;
-      rebased.hostname = publicOrigin.hostname;
-      return { ...agent, url: rebased.toString() };
-    }
-    if (explicitUrl && /^https?:\/\/[-a-zA-Z0-9.]+\.lolgames\.net(?::\d+)?(?:\/|$)/.test(explicitUrl)) return { ...agent, url: explicitUrl };
     const rebased = new URL(agent.url);
     rebased.protocol = publicOrigin.protocol;
     rebased.hostname = publicOrigin.hostname;
@@ -552,8 +538,6 @@ try {
   runSetup().catch((error) => {
     console.error('[setup] Preflight error:', error.message);
   }).then(async () => {
-  // Ensure AGENTS.md symlinks exist on every server start
-  refreshAgentsLinks();
   try {
     const routerStatus = await handle9RouterAction('restart');
     if (!routerStatus.livePort) {

@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { defaultPath } from './config.js';
-import { supervisor } from './agents.js';
 
 const STEPS = [
   { id: 'tmpdirs', label: 'Creating temp directories' },
@@ -105,38 +104,19 @@ function readStateLinks() {
     const data = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
     return {
       workerAgentsUrl: String(data.worker_agents_url || data.url || '').trim(),
-      routerUrl: String(data.router_url || '').trim(),
-      codexUrl: String(data.codex_web_url || '').trim(),
-      opencodeUrl: String(data.opencode_url || '').trim(),
-      hermesUrl: String(data.hermes_webui_url || '').trim(),
-      agents: data.agents && typeof data.agents === 'object' ? data.agents : {},
     };
   } catch {
-    return {
-      workerAgentsUrl: '',
-      routerUrl: '',
-      codexUrl: '',
-      opencodeUrl: '',
-      hermesUrl: '',
-      agents: {},
-    };
+    return { workerAgentsUrl: '' };
   }
 }
 
 export function refreshAgentsLinks() {
   const links = readStateLinks();
-  const agentById = new Map(supervisor.snapshot().map((agent) => [agent.id, agent]));
   return {
     ok: true,
-    changed: Boolean(links.workerAgentsUrl || links.routerUrl || links.codexUrl || links.opencodeUrl || links.hermesUrl),
+    changed: Boolean(links.workerAgentsUrl),
     links,
-    agents: {
-      ...Object.fromEntries(Object.entries(links.agents || {}).map(([id, url]) => [id, String(url || '').trim()])),
-      '__9router__': links.routerUrl || links.agents?.__9router__ || '',
-      'codex-web-local': links.codexUrl || links.agents?.['codex-web-local'] || '',
-      opencode: links.opencodeUrl || links.agents?.opencode || '',
-      'hermes-webui': links.hermesUrl || links.agents?.['hermes-webui'] || '',
-    }
+    agents: {},
   };
 }
 

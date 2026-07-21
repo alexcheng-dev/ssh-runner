@@ -68,7 +68,7 @@ That script:
 3. uploads `/Users/igor/Git-projects/9router` and `/Users/igor/Git-projects/hermes-webui`
 4. runs `npm install` and installs `codexapp` plus `opencode-ai`
 5. starts Worker Agents in detached tmux on port `1456`
-6. starts separate `*.lolgames.net` tunnels for Worker Agents, Codex Web Local, OpenCode, and Hermes WebUI
+6. starts one `*.lolgames.net` same-port tunnel for Worker Agents; child UIs reuse that hostname with their own ports
 7. saves the result under `./outputs/*-worker-agents.json`
 
 ## Notes
@@ -80,9 +80,9 @@ That script:
 - The worker launcher now preconfigures the child UIs to use local 9Router by default: Codex Web Local gets a seeded custom-endpoint state, OpenCode starts with a stable listed router model (`openai/gpt-5.4-mini`) against `http://127.0.0.1:20127/v1`, and Hermes uses the generated `~/.hermes/config.yaml`.
 - Prefer reusing an already running worker for CLI smoke tests. The repo `tests/` helpers are meant to run fast over SSH against a live worker with short one-shot prompts, not by launching a fresh worker each time.
 - Prefer refreshing the current worker in place over launching a fresh worker whenever possible. Use `scripts/refresh-worker-agents-worker.sh <ssh-destination>` for one-worker updates and only fall back to fresh provisioning when the existing worker is broken beyond quick repair.
-- Child UI links now use `http://<worker-prefix>-<service>.lolgames.net:PORT/` through the lolgames broker instead of `trycloudflare`; each worker gets a unique prefix to avoid hostname collisions. In same-port mode, one hostname can cover all worker ports: `http://<prefix>-9router.lolgames.net:20127` reaches worker port `20127`, and `http://<prefix>-9router.lolgames.net:18923` reaches worker port `18923`.
-- The launchers upload `scripts/lolgames_tunnel.py` to the worker and persist URLs in `~/.worker-agents/state.json` / `~/.codex/worker-state.json` so local parsing can recover if tmate output is delayed.
-- After a worker is provisioned, verify the live URLs with `./scripts/verify-lolgames-worker-links.sh "$WORKER_AGENTS_URL" "$ROUTER_URL"` before sharing them.
+- Child UI links use the Worker Agents public hostname and only swap the port. Example: `http://<prefix>-worker-agents.lolgames.net:1456` is the console, and `http://<prefix>-worker-agents.lolgames.net:20127` reaches local 9Router on the worker.
+- The launchers upload `scripts/lolgames_tunnel.py` to the worker and persist only the Worker Agents URL in `~/.worker-agents/state.json`; child URLs are derived from that hostname plus the child port.
+- After a worker is provisioned, verify the live same-host routes with `./scripts/verify-lolgames-worker-links.sh "$WORKER_AGENTS_URL"` before sharing them.
 - The runner stays alive for about 6 hours after the artifact upload step.
 - Node.js was already present on the tested runner image (`node v22.23.1`, `npm 10.9.8` on July 19, 2026).
 
@@ -169,7 +169,7 @@ npm run check
 
 - `./tests/test-tunnel-websocket.sh` starts a local echo server on port `3010`, publishes it through `scripts/tunnel.sh`, and verifies a public `ws://<name>.lolgames.net:3010/` round-trip.
 - `./tests/test-tunnel-sse.sh` starts a local SSE server on port `3020`, publishes it through `scripts/tunnel.sh`, and verifies streamed `text/event-stream` lines over the public tunnel.
-- `./scripts/verify-lolgames-worker-links.sh <worker-agents-url> [router-url]` verifies live Worker Agents and 9Router links, including same-host cross-port routes like `<worker-host>:20127` and `<router-host>:1456`.
+- `./scripts/verify-lolgames-worker-links.sh <worker-agents-url>` verifies live Worker Agents and same-host 9Router cross-port routes like `<worker-host>:20127`.
 
 ### All-ports hostname mode
 
@@ -177,9 +177,9 @@ npm run check
 - Example: if Worker Agents is published as `http://<prefix>-worker-agents.lolgames.net:1456`, then `http://<prefix>-worker-agents.lolgames.net:20127/` reaches the worker's local 9Router port too, as long as 9Router is listening locally.
 - Worker Agents rebases “open” links to the current `*.lolgames.net` hostname when accessed through lolgames, so clicking child UI links should stay on the same public hostname and only change the port/path.
 - A closed local port must not kill an all-ports hostname tunnel. The client should close only that failed connection and keep the control session alive for other ports.
-- The tunnel client reconnects its broker control session after resets. If a public URL starts timing out, inspect `~/worker-agents-lolgames.log` / `~/9router-lolgames.log`; restarting the detached client for the same name restores the same public hostname.
+- The tunnel client reconnects its broker control session after resets. If a public URL starts timing out, inspect `~/worker-agents-lolgames.log`; restarting the detached client for the same name restores the same public hostname.
 - If the broker appears to "lose" registrations while worker client processes are still alive, check `lolgames-micro` for leaked public sockets: `ss -tan state close-wait '( sport = :10080 or sport ge :1024 )'`. The broker/client protocol has ping/pong keepalives and the public forwarding path must cancel the paired copy task as soon as either side closes; otherwise stale control sessions or `CLOSE-WAIT` public sockets can leave a hostname unregistered until the client is restarted.
 - The worker launchers clone `https://github.com/phaneron23/9router.git` on the GitHub runner by default instead of pushing the local checkout through tmate. Use `ROUTER_UPLOAD=1` only when you explicitly need to ship a local 9Router checkout; the archive excludes `.next`, `node_modules`, and other build artifacts.
-- On July 21, 2026, the verified live pattern was: `http://<prefix>-worker-agents.lolgames.net:1456/` returns Worker Agents (`200`), `http://<prefix>-worker-agents.lolgames.net:20127/v1/models` reaches 9Router (`401` without API key), and the explicit `http://<prefix>-9router.lolgames.net:20127/v1/models` also reaches 9Router.
+- On July 21, 2026, the preferred live pattern is one hostname: `http://<prefix>-worker-agents.lolgames.net:1456/` returns Worker Agents (`200`), and `http://<prefix>-worker-agents.lolgames.net:20127/v1/models` reaches 9Router (`401` without API key).
 - 9Router is a Next standalone build. After `npm run build`, copy `.next/static` to `.next/standalone/.next/static` and `public` to `.next/standalone/public`, then launch from inside `.next/standalone` with `node server.js`. If `/login` returns HTML but every `/_next/static/...` asset returns `404`, the page will look stuck on loading until this static-copy/working-directory fix is applied.
 - `refresh-worker-agents-worker.sh` provisions missing child-agent CLIs on the runner: `codexapp`, `opencode`, and Hermes WebUI. Hermes WebUI is cloned from `https://github.com/nesquena/hermes-webui.git` by default; use `HERMES_UPLOAD=1` only when a local Hermes checkout must be shipped.
