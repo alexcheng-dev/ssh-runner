@@ -112,6 +112,42 @@ HERMES_WEBUI_HOME="$HOME/hermes-webui"
 STATE_DIR="$HOME/.worker-agents"
 mkdir -p "$STATE_DIR" "$HOME/node-http2"
 
+cat > "$STATE_DIR/9router-shell-env.sh" <<'SH'
+export WORKER_AGENTS_9ROUTER_PORT=20127
+export WORKER_AGENTS_9ROUTER_API_KEY=local-dev-key
+export OPENAI_BASE_URL="http://127.0.0.1:20127/v1"
+export OPENAI_API_KEY="local-dev-key"
+SH
+
+for profile in "$HOME/.bashrc" "$HOME/.profile"; do
+  touch "$profile"
+  if ! grep -Fq '.worker-agents/9router-shell-env.sh' "$profile"; then
+    printf '\n[ -f "$HOME/.worker-agents/9router-shell-env.sh" ] && . "$HOME/.worker-agents/9router-shell-env.sh"\n' >> "$profile"
+  fi
+done
+
+mkdir -p "$HOME/.codex"
+python3 - <<'PY'
+from pathlib import Path
+
+path = Path.home() / ".codex" / "config.toml"
+existing = path.read_text(encoding="utf-8") if path.exists() else ""
+lines = existing.splitlines()
+
+def set_line(key, value):
+    line = f'{key} = {value}'
+    for i, current in enumerate(lines):
+        if current.startswith(f"{key} = "):
+            lines[i] = line
+            return
+    lines.append(line)
+
+set_line("model", '"opencode/big-pickle"')
+set_line("openai_base_url", '"http://127.0.0.1:20127/v1"')
+set_line("chatgpt_base_url", '"http://127.0.0.1:20127/backend-api"')
+path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+PY
+
 start_tunnel() {
   local name="$1"
   local port="$2"
