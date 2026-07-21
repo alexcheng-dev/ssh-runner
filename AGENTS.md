@@ -5,6 +5,7 @@ Keep this file short. Put durable workflow details in `./wiki/*.md` and reusable
 ## Wiki index
 
 - `/Users/igor/Documents/Codex/2026-07-19/alexcheng-dev/wiki/workflow.md` — local workflow notes for the GitHub Actions SSH runner and quick usage.
+- `/Users/igor/Documents/sshworker/wiki/workflow.md` — local workflow notes, including the Worker Agents submodule.
 
 ## Scripts
 

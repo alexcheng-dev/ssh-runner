@@ -97,7 +97,6 @@ while IFS= read -r RUN_ID; do
   printf 'status\t%s\n' "$STATUS"
   printf 'run_url\t%s\n' "$RUN_URL"
   printf 'ssh\t%s\n' "${SSH_CMD:-<artifact not ready>}"
-  printf 'web\t%s\n' "${WEB_URL:-<artifact not ready>}"
   printf 'codex_web\t%s\n' "${CODEX_WEB_URL:-<not running>}"
   printf 'codex_password\t%s\n' "${CODEX_PASSWORD:-<not running>}"
   printf '\n'

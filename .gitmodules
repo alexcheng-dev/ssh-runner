@@ -1,0 +1,3 @@
+[submodule "workerAgents"]
+	path = workerAgents
+	url = /Users/igor/Git-projects/codex-web-local-android/hermes3/.worktrees/worker-agents

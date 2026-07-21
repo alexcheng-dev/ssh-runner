@@ -30,15 +30,16 @@ The output prints:
 - the live `ssh ...@...tmate.io` command
 - the matching `https://tmate.io/t/...` web session URL
 
-List all currently running worker instances and their live SSH/Web links when the
+Do not rely on the tmate web session URL for this workflow. In practice it was returning `503` here and was not usable; prefer the SSH session and the Codex Web URL.
+
+List all currently running worker instances and their live SSH links when the
 `ssh-link` artifact is already available:
 
 ```bash
 ./scripts/list-running-workers.sh
 ```
 
-The listing script also tries to query each worker for a live Codex Web
-Cloudflare URL and the current Codex Web password.
+The listing script prints SSH plus the live Codex Web Cloudflare URL and the current Codex Web password. It intentionally does not print the tmate web URL because that surface was consistently unusable here.
 
 Inspect one worker directly:
 
@@ -94,3 +95,14 @@ When automating the interactive tmate SSH session, do not paste the remote setup
 When waiting for remote setup completion, require the full Cloudflare hostname marker such as `trycloudflare.com`, not just `PUBLIC_URL=`; output is read character-by-character and can otherwise stop before the URL body is captured.
 
 The worker launcher persists runner state in `~/.codex/worker-state.json` and still writes `~/.codex/codexui-public-url`. Inventory scripts should prefer the JSON state file over scraping transient `cloudflared` startup log lines.
+
+## Worker Agents submodule
+
+`workerAgents/` is a git submodule pinned to a local worktree fork of `/Users/igor/Git-projects/codex-web-local-android/hermes3`.
+
+The fork removes the Android project and Android build/release docs, then keeps the reusable Node.js console as a generic worker supervisor. Verify it with:
+
+```bash
+cd workerAgents
+npm run check
+```
