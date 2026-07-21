@@ -9,7 +9,7 @@ HERMES_WEBUI_DIR="${HERMES_WEBUI_DIR:-/Users/igor/Git-projects/hermes-webui}"
 HERMES_WEBUI_GIT_URL="${HERMES_WEBUI_GIT_URL:-https://github.com/nesquena/hermes-webui.git}"
 APP_PORT="${APP_PORT:-1456}"
 TUNNEL_CLIENT_PATH="$ROOT_DIR/scripts/lolgames_tunnel.py"
-SSH_DEST="${1:-}"
+SSH_TARGET="${1:-}"
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
@@ -24,9 +24,10 @@ require() {
 require python3
 require tar
 
-if [[ -z "$SSH_DEST" ]]; then
-  echo "Usage: $0 <ssh-destination>" >&2
+if [[ -z "$SSH_TARGET" ]]; then
+  echo "Usage: $0 <ssh-destination-or-command>" >&2
   echo "Example: $0 TcmpQmxBBMTWhy5KNJ5b3gMbM@sfo2.tmate.io" >&2
+  echo "Example: $0 'ssh -i ./outputs/keys/123_id_ed25519 -p 43123 runner@runner-123-ssh.lolgames.net'" >&2
   exit 1
 fi
 
@@ -193,10 +194,44 @@ start_tunnel() {
 
 STATUS_PATH="$STATE_DIR/status.json"
 curl -fsS "http://127.0.0.1:${APP_PORT:-1456}/api/status" > "$STATUS_PATH"
-
 WORKER_AGENTS_URL="$(start_tunnel worker-agents "${APP_PORT:-1456}" || true)"
+ROUTER_URL="$(start_tunnel 9router 20127 || true)"
+CODEX_PORT="$(python3 - "$STATUS_PATH" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for agent in data.get("agents", []):
+    if agent.get("id") == "codex-web-local" and agent.get("state") == "running":
+        print(agent.get("port", ""))
+        break
+PY
+)"
+OPENCODE_PORT="$(python3 - "$STATUS_PATH" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for agent in data.get("agents", []):
+    if agent.get("id") == "opencode" and agent.get("state") == "running":
+        print(agent.get("port", ""))
+        break
+PY
+)"
+HERMES_PORT="$(python3 - "$STATUS_PATH" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for agent in data.get("agents", []):
+    if agent.get("id") == "hermes-webui" and agent.get("state") == "running":
+        print(agent.get("port", ""))
+        break
+PY
+)"
 
-python3 - "${WORKER_AGENTS_URL:-}" "${APP_PORT:-1456}" <<'PY'
+CODEX_URL=""
+OPENCODE_URL=""
+HERMES_URL=""
+if [[ -n "${CODEX_PORT:-}" ]]; then CODEX_URL="$(start_tunnel codex-web-local "$CODEX_PORT" || true)"; fi
+if [[ -n "${OPENCODE_PORT:-}" ]]; then OPENCODE_URL="$(start_tunnel opencode "$OPENCODE_PORT" || true)"; fi
+if [[ -n "${HERMES_PORT:-}" ]]; then HERMES_URL="$(start_tunnel hermes-webui "$HERMES_PORT" || true)"; fi
+
+python3 - "${WORKER_AGENTS_URL:-}" "${APP_PORT:-1456}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
 import json
 import os
 import sys
@@ -204,11 +239,19 @@ from datetime import datetime, timezone
 
 worker_agents_url = sys.argv[1]
 port = int(sys.argv[2])
+router_url = sys.argv[3]
+codex_url = sys.argv[4]
+opencode_url = sys.argv[5]
+hermes_url = sys.argv[6]
 state = {
     "status": "running" if worker_agents_url else "starting",
     "url": worker_agents_url,
     "worker_agents_url": worker_agents_url,
     "port": port,
+    "router_url": router_url,
+    "codex_web_url": codex_url,
+    "opencode_url": opencode_url,
+    "hermes_webui_url": hermes_url,
     "updated_at": datetime.now(timezone.utc).isoformat(),
 }
 state_dir = os.path.expanduser("~/.worker-agents")
@@ -220,11 +263,15 @@ PY
 
 echo "__WORKER_AGENTS_DONE__${RUN_TOKEN:-}"
 echo "PUBLIC_URL=${WORKER_AGENTS_URL:-}"
+echo "ROUTER_URL=${ROUTER_URL:-}"
+echo "CODEX_URL=${CODEX_URL:-}"
+echo "OPENCODE_URL=${OPENCODE_URL:-}"
+echo "HERMES_URL=${HERMES_URL:-}"
 EOF
 
 RUN_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 REMOTE_OUTPUT="$TMP_DIR/remote-output.txt"
-python3 - "$SSH_DEST" "$ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" "$ROUTER_ARCHIVE_PATH" "$HERMES_ARCHIVE_PATH" <<'PY'
+python3 - "$SSH_TARGET" "$ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" "$ROUTER_ARCHIVE_PATH" "$HERMES_ARCHIVE_PATH" <<'PY'
 import base64
 import os
 import re
@@ -235,14 +282,12 @@ import subprocess
 import sys
 import time
 
-ssh_dest, archive_path, tunnel_client_path, script_path, out_path, app_port, run_token, router_archive_path, hermes_archive_path = sys.argv[1:]
+ssh_target, archive_path, tunnel_client_path, script_path, out_path, app_port, run_token, router_archive_path, hermes_archive_path = sys.argv[1:]
+ssh_cmd = ssh_target if ssh_target.strip().startswith("ssh ") else f"ssh {shlex.quote(ssh_target)}"
+ssh_argv = shlex.split(ssh_cmd)
+ssh_argv = [ssh_argv[0], "-tt", *ssh_argv[1:]]
 proc = subprocess.Popen(
-    [
-        "ssh", "-tt",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        ssh_dest,
-    ],
+    ssh_argv,
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
@@ -381,10 +426,34 @@ PY
 
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 PUBLIC_URL="$(grep -aoE 'PUBLIC_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^PUBLIC_URL=//' | tail -n 1 || true)"
+ROUTER_URL="$(grep -aoE 'ROUTER_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^ROUTER_URL=//' | tail -n 1 || true)"
+CODEX_URL="$(grep -aoE 'CODEX_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^CODEX_URL=//' | tail -n 1 || true)"
+OPENCODE_URL="$(grep -aoE 'OPENCODE_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^OPENCODE_URL=//' | tail -n 1 || true)"
+HERMES_URL="$(grep -aoE 'HERMES_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^HERMES_URL=//' | tail -n 1 || true)"
 
 if [[ -z "${PUBLIC_URL:-}" ]]; then
   STATE_FALLBACK="$TMP_DIR/remote-state-fallback.txt"
-  python3 "$ROOT_DIR/tests/lib/ssh_tmate_exec.py" "$SSH_DEST" 'cat ~/.worker-agents/state.json 2>/dev/null || true' --timeout 30 > "$STATE_FALLBACK" 2>/dev/null || true
+  python3 - "$ROOT_DIR" "$SSH_TARGET" "$STATE_FALLBACK" <<'PY' || true
+import pathlib
+import shlex
+import subprocess
+import sys
+
+root_dir = pathlib.Path(sys.argv[1])
+ssh_target = sys.argv[2]
+out_path = pathlib.Path(sys.argv[3])
+remote_cmd = "cat ~/.worker-agents/state.json 2>/dev/null || true"
+if "tmate.io" in ssh_target:
+    dest = ssh_target.removeprefix("ssh ").strip()
+    argv = [str(root_dir / "tests" / "lib" / "ssh_tmate_exec.py"), dest, remote_cmd, "--timeout", "30"]
+    timeout = 45
+else:
+    ssh_cmd = ssh_target if ssh_target.strip().startswith("ssh ") else f"ssh {shlex.quote(ssh_target)}"
+    argv = shlex.split(ssh_cmd) + [remote_cmd]
+    timeout = 20
+proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout, check=False)
+out_path.write_text(proc.stdout or "", encoding="utf-8")
+PY
   python3 - "$STATE_FALLBACK" "$TMP_DIR/state.env" <<'PY'
 import json, re, sys
 text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
@@ -392,8 +461,12 @@ text = re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]', '', text).replace('\r', '')
 match = re.search(r'\{[^{}]*"worker_agents_url"[^{}]*\}', text, re.S)
 data = json.loads(match.group(0)) if match else {}
 with open(sys.argv[2], 'w', encoding='utf-8') as f:
-    val = str(data.get('worker_agents_url') or data.get('url') or '')
-    f.write(f'PUBLIC_URL={val}\n')
+    for key, name in [
+        ('worker_agents_url','PUBLIC_URL'), ('router_url','ROUTER_URL'),
+        ('codex_web_url','CODEX_URL'), ('opencode_url','OPENCODE_URL'),
+        ('hermes_webui_url','HERMES_URL')]:
+        val = str(data.get(key) or '')
+        f.write(f'{name}={val}\n')
 PY
   # shellcheck disable=SC1090
   source "$TMP_DIR/state.env" 2>/dev/null || true
@@ -401,17 +474,29 @@ fi
 
 echo "workerAgents public URL:"
 echo "${PUBLIC_URL:-<missing>}"
+echo "9router public URL:"
+echo "${ROUTER_URL:-<missing>}"
+echo "codex_web public URL:"
+echo "${CODEX_URL:-<missing>}"
+echo "opencode public URL:"
+echo "${OPENCODE_URL:-<missing>}"
+echo "hermes_webui public URL:"
+echo "${HERMES_URL:-<missing>}"
 
-python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-refresh.json" "$SSH_DEST" "${PUBLIC_URL:-}" <<'PY'
+python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-refresh.json" "$SSH_TARGET" "${PUBLIC_URL:-}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
 
-out_path, ssh_dest, public_url = sys.argv[1:]
+out_path, ssh_dest, public_url, router_url, codex_url, opencode_url, hermes_url = sys.argv[1:]
 payload = {
     "created_at": datetime.now(timezone.utc).isoformat(),
     "ssh": ssh_dest,
     "worker_agents_url": public_url,
+    "router_url": router_url,
+    "codex_web_url": codex_url,
+    "opencode_url": opencode_url,
+    "hermes_webui_url": hermes_url,
 }
 with open(out_path, "w", encoding="utf-8") as f:
     json.dump(payload, f, indent=2)

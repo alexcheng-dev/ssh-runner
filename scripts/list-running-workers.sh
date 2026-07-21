@@ -4,12 +4,10 @@ set -euo pipefail
 REPO="${REPO:-alexcheng-dev/ssh-runner}"
 WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
 RUN_LIMIT="${RUN_LIMIT:-5}"
-PROBE_TIMEOUT="${PROBE_TIMEOUT:-8}"
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-OUTPUTS_DIR="$ROOT_DIR/outputs"
 
 require() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -21,61 +19,72 @@ require() {
 require gh
 require python3
 require unzip
-find_local_output() {
+require ./tests/lib/ssh_tmate_exec.py
+find_remote_lolgames() {
   local ssh_cmd="$1"
-  local web_url="$2"
-  [[ -d "$OUTPUTS_DIR" ]] || return 0
-  python3 - "$OUTPUTS_DIR" "$ssh_cmd" "$web_url" <<'PY'
+  local ssh_dest="${ssh_cmd#ssh }"
+  python3 - "$ROOT_DIR" "$ssh_dest" <<'PY'
 import json
 import pathlib
+import re
+import shlex
+import subprocess
 import sys
 
-outputs_dir = pathlib.Path(sys.argv[1])
-ssh_cmd = sys.argv[2]
-web_url = sys.argv[3]
+root_dir = pathlib.Path(sys.argv[1])
+ssh_cmd = sys.argv[2].strip()
+helper = root_dir / "tests" / "lib" / "ssh_tmate_exec.py"
+if not ssh_cmd:
+    raise SystemExit(0)
 
-matches = []
-for path in sorted(outputs_dir.glob("*-worker.json"), reverse=True):
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        continue
-    if data.get("ssh") == ssh_cmd or data.get("web") == web_url:
-        matches.append(data)
-        break
+remote_cmd = "cat ~/.worker-agents/state.json 2>/dev/null || cat ~/.codex/worker-state.json 2>/dev/null || true"
+try:
+    if "tmate.io" in ssh_cmd:
+        ssh_dest = ssh_cmd.removeprefix("ssh ").strip()
+        argv = [str(helper), ssh_dest, remote_cmd, "--timeout", "25"]
+        proc = subprocess.run(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=40,
+            check=False,
+        )
+    else:
+        argv = shlex.split(ssh_cmd) + [remote_cmd]
+        proc = subprocess.run(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+except Exception:
+    print("__ERROR__ssh_helper_failed")
+    raise SystemExit(0)
 
-if matches:
-    data = matches[0]
-    print((data.get("codex_url") or "").strip())
-    print((data.get("codex_password") or "").strip())
-PY
-}
-find_local_lolgames() {
-  local ssh_cmd="$1"
-  local web_url="$2"
-  [[ -d "$OUTPUTS_DIR" ]] || return 0
-  python3 - "$OUTPUTS_DIR" "$ssh_cmd" "$web_url" <<'PY'
-import json
-import pathlib
-import sys
+text = proc.stdout or ""
+if "Failed to reach remote shell prompt" in text or "Internal error" in text:
+    print("__ERROR__tmate_unavailable")
+    raise SystemExit(0)
+match = re.search(r'\{[^{}]*"worker_agents_url"[^{}]*\}', text, re.S)
+if not match:
+    match = re.search(r'\{.*?"worker_agents_url".*?\}', text, re.S)
+if not match:
+    print("__ERROR__remote_state_missing")
+    raise SystemExit(0)
 
-outputs_dir = pathlib.Path(sys.argv[1])
-ssh_cmd = sys.argv[2]
-web_url = sys.argv[3]
-ssh_raw = ssh_cmd.removeprefix("ssh ").strip()
+try:
+    data = json.loads(match.group(0))
+except Exception:
+    raise SystemExit(0)
 
-for path in sorted(outputs_dir.glob("*-worker-refresh.json"), reverse=True):
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        continue
-    if data.get("ssh") in (ssh_cmd, ssh_raw) or data.get("worker_agents_url", "").startswith("http://") and web_url and web_url in data.get("worker_agents_url", ""):
-        print((data.get("worker_agents_url") or "").strip())
-        print((data.get("router_url") or "").strip())
-        print((data.get("codex_web_url") or "").strip())
-        print((data.get("opencode_url") or "").strip())
-        print((data.get("hermes_webui_url") or "").strip())
-        break
+print((data.get("worker_agents_url") or data.get("url") or "").strip())
+print((data.get("router_url") or "").strip())
+print((data.get("codex_web_url") or "").strip())
+print((data.get("opencode_url") or "").strip())
+print((data.get("hermes_webui_url") or "").strip())
 PY
 }
 
@@ -106,9 +115,6 @@ while IFS= read -r RUN_ID; do
   ARTIFACT_ID="$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[]? | select(.name=="ssh-link" and .expired==false) | .id' | head -n 1 || true)"
 
   SSH_CMD=""
-  WEB_URL=""
-  CODEX_WEB_URL=""
-  CODEX_PASSWORD=""
   LOLGAMES_INFO=""
   if [[ -n "${ARTIFACT_ID:-}" ]]; then
     ZIP_PATH="$TMP_DIR/$RUN_ID.zip"
@@ -117,12 +123,16 @@ while IFS= read -r RUN_ID; do
     gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" > "$ZIP_PATH"
     unzip -qo "$ZIP_PATH" -d "$OUT_DIR"
     SSH_CMD="$(sed -n '1p' "$OUT_DIR/ssh-link.txt" 2>/dev/null || true)"
-    WEB_URL="$(sed -n '2p' "$OUT_DIR/ssh-link.txt" 2>/dev/null || true)"
-
-    LOCAL_INFO="$(find_local_output "$SSH_CMD" "$WEB_URL")"
-    CODEX_WEB_URL="$(printf '%s\n' "$LOCAL_INFO" | sed -n '1p')"
-    CODEX_PASSWORD="$(printf '%s\n' "$LOCAL_INFO" | sed -n '2p')"
-    LOLGAMES_INFO="$(find_local_lolgames "$SSH_CMD" "$WEB_URL")"
+    if [[ -f "$OUT_DIR/id_ed25519" && "$SSH_CMD" == *"-i ./id_ed25519"* ]]; then
+      KEY_DIR="$ROOT_DIR/outputs/keys"
+      mkdir -p "$KEY_DIR"
+      KEY_PATH="$KEY_DIR/${RUN_ID}_id_ed25519"
+      cp "$OUT_DIR/id_ed25519" "$KEY_PATH"
+      chmod 600 "$KEY_PATH"
+      SSH_CMD="${SSH_CMD/-i .\\/id_ed25519/-i $KEY_PATH}"
+      SSH_CMD="${SSH_CMD/-i ./id_ed25519/-i $KEY_PATH}"
+    fi
+    LOLGAMES_INFO="$(find_remote_lolgames "$SSH_CMD")"
   fi
 
   printf 'run_id\t%s\n' "$RUN_ID"
@@ -131,15 +141,18 @@ while IFS= read -r RUN_ID; do
   printf 'status\t%s\n' "$STATUS"
   printf 'run_url\t%s\n' "$RUN_URL"
   printf 'ssh\t%s\n' "${SSH_CMD:-<artifact not ready>}"
-  printf 'codex_web\t%s\n' "${CODEX_WEB_URL:-<not running>}"
-  printf 'codex_password\t%s\n' "${CODEX_PASSWORD:-<not running>}"
   if [[ -n "${LOLGAMES_INFO:-}" ]]; then
-    i=0
-    for field in $LOLGAMES_FIELDS; do
-      i=$((i + 1))
-      val="$(printf '%s\n' "$LOLGAMES_INFO" | sed -n "${i}p")"
-      printf 'lolgames_%s\t%s\n' "$field" "${val:-<no tunnel>}"
-    done
+    first_line="$(printf '%s\n' "$LOLGAMES_INFO" | sed -n '1p')"
+    if [[ "$first_line" == __ERROR__* ]]; then
+      printf 'lolgames_state\t%s\n' "${first_line#__ERROR__}"
+    else
+      i=0
+      for field in $LOLGAMES_FIELDS; do
+        i=$((i + 1))
+        val="$(printf '%s\n' "$LOLGAMES_INFO" | sed -n "${i}p")"
+        printf 'lolgames_%s\t%s\n' "$field" "${val:-<no tunnel>}"
+      done
+    fi
   fi
   printf '\n'
 done <<< "$RUN_IDS"
