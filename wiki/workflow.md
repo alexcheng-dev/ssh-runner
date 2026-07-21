@@ -69,7 +69,7 @@ That script:
 - `scripts/ssh-runner-link.sh` now tries to dedupe dispatch retries: if GitHub returns an error but a fresh run was actually created, the script reuses that run instead of dispatching another one.
 - The launchers auto-cancel the just-created GitHub Actions run on failure by default (`CANCEL_FAILED_RUN=1`) so partial setup errors do not leave a new orphan worker behind.
 - Worker Agents can supervise Codex Web Local, OpenCode, Hermes WebUI, and 9Router on the worker. A fresh Hermes WebUI clone may need the Hermes Agent bootstrap once before `--skip-agent-install` can run non-interactively.
-- The worker launcher now preconfigures the child UIs to use local 9Router by default: Codex Web Local gets a seeded custom-endpoint state, OpenCode starts with `openai/opencode/big-pickle` against `http://127.0.0.1:20127/v1`, and Hermes uses the generated `~/.hermes/config.yaml`.
+- The worker launcher now preconfigures the child UIs to use local 9Router by default: Codex Web Local gets a seeded custom-endpoint state, OpenCode starts with a stable listed router model (`openai/gpt-5.4-mini`) against `http://127.0.0.1:20127/v1`, and Hermes uses the generated `~/.hermes/config.yaml`.
 - Prefer reusing an already running worker for CLI smoke tests. The repo `tests/` helpers are meant to run fast over SSH against a live worker with short one-shot prompts, not by launching a fresh worker each time.
 - Do not use `https://...trycloudflare.com:PORT/` for the child UIs. `trycloudflare` does not expose arbitrary origin ports on the same hostname here; start one tunnel per port instead.
 - The runner stays alive for about 6 hours after the artifact upload step.
@@ -84,6 +84,11 @@ That script:
 - Avoid pasting large heredocs into the interactive session. Echoed input and continuation prompts can break marker-based automation; base64 upload plus decode/run is more reliable here.
 - If you need to inventory a worker later, prefer persisted state files such as `~/.codex/worker-state.json` over scraping transient terminal output or `cloudflared` startup logs.
 - SSH CLI verification should source the worker shell profiles and use the agent CLIs directly (`codex exec`, `opencode run`, `hermes -z`) instead of driving the web UIs. The repo `tests/` helpers automate that against the interactive tmate shell.
+- When testing through the interactive tmate shell, run only one SSH automation session at a time per worker. Parallel sessions can interleave stale terminal output and create false positives/negatives.
+- The SSH smoke tests in `tests/` now use agent-specific exact tokens instead of a generic `hi` so previous tmate scrollback does not accidentally satisfy later checks.
+- For Codex CLI, `openai_base_url` and `chatgpt_base_url` must stay at the top level of `~/.codex/config.toml`. If they are written inside `[projects."/home/runner"]`, Codex ignores them and falls back to `api.openai.com`.
+- On the reused worker tested on July 21, 2026, Hermes CLI was healthy and local 9router responded on `127.0.0.1:20127`, but provider/model availability still depended on active credentials inside that worker's 9router state. A model can appear syntactically valid yet fail with `404 No active credentials for provider ...`.
+- Local 9router `/v1/responses` on that worker accepted plain HTTP fallback, but Codex first attempted a websocket handshake and logged `Handshake not finished` before falling back successfully. Treat that websocket error as a transport quirk, not automatically as a fatal failure.
 
 ## Running codexapp safely on the runner
 
