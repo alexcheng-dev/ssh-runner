@@ -47,6 +47,14 @@ Inspect one worker directly:
 ./scripts/inspect-worker.sh <ssh-destination>
 ```
 
+Refresh the current existing worker in place instead of launching a new one:
+
+```bash
+./scripts/refresh-worker-agents-worker.sh <ssh-destination>
+```
+
+This script targets exactly one worker: the SSH destination you pass in. Prefer it over reprovisioning when you only need to update the worker you are already using, because it is much faster than starting a fresh GitHub Actions runner.
+
 Launch `workerAgents` on a fresh worker by uploading the local repo copy instead of starting Codex Web Local:
 
 ```bash
@@ -71,6 +79,7 @@ That script:
 - Worker Agents can supervise Codex Web Local, OpenCode, Hermes WebUI, and 9Router on the worker. A fresh Hermes WebUI clone may need the Hermes Agent bootstrap once before `--skip-agent-install` can run non-interactively.
 - The worker launcher now preconfigures the child UIs to use local 9Router by default: Codex Web Local gets a seeded custom-endpoint state, OpenCode starts with a stable listed router model (`openai/gpt-5.4-mini`) against `http://127.0.0.1:20127/v1`, and Hermes uses the generated `~/.hermes/config.yaml`.
 - Prefer reusing an already running worker for CLI smoke tests. The repo `tests/` helpers are meant to run fast over SSH against a live worker with short one-shot prompts, not by launching a fresh worker each time.
+- Prefer refreshing the current worker in place over launching a fresh worker whenever possible. Use `scripts/refresh-worker-agents-worker.sh <ssh-destination>` for one-worker updates and only fall back to fresh provisioning when the existing worker is broken beyond quick repair.
 - Do not use `https://...trycloudflare.com:PORT/` for the child UIs. `trycloudflare` does not expose arbitrary origin ports on the same hostname here; start one tunnel per port instead.
 - The runner stays alive for about 6 hours after the artifact upload step.
 - Node.js was already present on the tested runner image (`node v22.23.1`, `npm 10.9.8` on July 19, 2026).
