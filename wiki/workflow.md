@@ -135,9 +135,9 @@ When waiting for remote setup completion, require the full Cloudflare hostname m
 
 The worker launcher persists runner state in `~/.codex/worker-state.json` and still writes `~/.codex/codexui-public-url`. Inventory scripts should prefer the JSON state file over scraping transient `cloudflared` startup log lines.
 
-## Worker Agents submodule
+## Worker Agents repo copy
 
-`workerAgents/` is a git submodule pinned to a local worktree fork of `/Users/igor/Git-projects/codex-web-local-android/hermes3`.
+`workerAgents/` now lives directly inside this repository as a normal tracked directory.
 
 The fork removes the Android project and Android build/release docs, then keeps the reusable Node.js console as a generic worker supervisor. Verify it with:
 
