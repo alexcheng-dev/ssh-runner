@@ -67,7 +67,7 @@ import sys
 
 ssh_dest = sys.argv[1]
 cmd = (
-    "q"
+    "q\n"
     "CODEX_URL=$(sed -n '1p' ~/.codex/codexui-public-url 2>/dev/null || true); "
     "if [ -z \"$CODEX_URL\" ]; then CODEX_URL=$(sed -n 's/.*\\(https://[-a-zA-Z0-9.]*trycloudflare\\.com\\).*/\\1/p' ~/codexapp-cloudflared.log 2>/dev/null | tail -n 1 || true); fi; "
     "CODEX_PASSWORD=$(sed -n '1p' ~/.codex/codexui-password 2>/dev/null || true); "
