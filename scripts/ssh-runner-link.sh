@@ -16,8 +16,21 @@ REPO="$1"
 WORKFLOW="$2"
 BRANCH="${3:-}"
 TMP_DIR="$(mktemp -d)"
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
+
+PREV_RUN_ID="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 1 --json databaseId --jq '.[0].databaseId // ""' 2>/dev/null || true)"
+
+resolve_new_run_id() {
+  gh run list \
+    --repo "$REPO" \
+    --workflow "$WORKFLOW" \
+    --limit 10 \
+    --json databaseId,createdAt,status \
+    --jq ".[] | select(.databaseId != ($PREV_RUN_ID | tonumber?)) | select(.createdAt >= \"$STARTED_AT\") | .databaseId" \
+    2>/dev/null | head -n 1
+}
 
 run_workflow() {
   if [[ -n "$BRANCH" ]]; then
@@ -27,8 +40,19 @@ run_workflow() {
   fi
 }
 
+RUN_ID=""
 for attempt in {1..3}; do
   if run_workflow; then
+    sleep 2
+    RUN_ID="$(resolve_new_run_id)"
+    if [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]]; then
+      RUN_ID="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 1 --json databaseId --jq '.[0].databaseId')"
+    fi
+    break
+  fi
+  RUN_ID="$(resolve_new_run_id)"
+  if [[ -n "$RUN_ID" && "$RUN_ID" != "null" ]]; then
+    echo "Workflow dispatch returned an error, but run $RUN_ID already exists; reusing it." >&2
     break
   fi
   if [[ "$attempt" == 3 ]]; then
@@ -39,8 +63,6 @@ for attempt in {1..3}; do
   sleep 3
 done
 
-sleep 2
-RUN_ID="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 1 --json databaseId --jq '.[0].databaseId')"
 if [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]]; then
   echo "Failed to resolve latest run id" >&2
   exit 1
@@ -69,4 +91,13 @@ fi
 
 gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" > "$TMP_DIR/artifact.zip"
 unzip -qo "$TMP_DIR/artifact.zip" -d "$TMP_DIR"
+
+if [[ -n "${SSH_RUNNER_META_OUT:-}" ]]; then
+  {
+    printf 'RUN_ID=%s\n' "$RUN_ID"
+    printf 'REPO=%s\n' "$REPO"
+    printf 'WORKFLOW=%s\n' "$WORKFLOW"
+  } > "$SSH_RUNNER_META_OUT"
+fi
+
 cat "$TMP_DIR/ssh-link.txt"

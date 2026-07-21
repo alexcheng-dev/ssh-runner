@@ -7,8 +7,21 @@ WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
 APP_DIR="$ROOT_DIR/workerAgents"
 APP_PORT="${APP_PORT:-1456}"
 TMP_DIR="$(mktemp -d)"
+RUN_ID=""
+LAUNCH_OK=0
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
+
+on_exit() {
+  status=$?
+  if [[ $status -ne 0 && $LAUNCH_OK -ne 1 && -n "${RUN_ID:-}" && "${CANCEL_FAILED_RUN:-1}" == "1" ]]; then
+    gh run cancel "$RUN_ID" --repo "$REPO" >/dev/null 2>&1 || true
+    echo "Canceled failed worker run: $RUN_ID" >&2
+  fi
+  cleanup
+  exit $status
+}
+trap on_exit EXIT
 
 require() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -35,7 +48,8 @@ if [[ ! -d "$APP_DIR" ]]; then
 fi
 
 echo "Triggering worker..."
-./scripts/ssh-runner-link.sh "$REPO" "$WORKFLOW" > "$TMP_DIR/ssh-link.txt"
+SSH_RUNNER_META_OUT="$TMP_DIR/ssh-runner-meta.env" ./scripts/ssh-runner-link.sh "$REPO" "$WORKFLOW" > "$TMP_DIR/ssh-link.txt"
+source "$TMP_DIR/ssh-runner-meta.env"
 SSH_CMD="$(sed -n '1p' "$TMP_DIR/ssh-link.txt")"
 WEB_URL="$(sed -n '2p' "$TMP_DIR/ssh-link.txt")"
 
@@ -247,3 +261,5 @@ if [[ -z "${PUBLIC_URL:-}" ]]; then
   echo "  tail -60 ~/worker-agents-cloudflared.log" >&2
   exit 1
 fi
+
+LAUNCH_OK=1

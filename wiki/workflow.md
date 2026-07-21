@@ -2,7 +2,7 @@
 
 ## GitHub Actions SSH runner
 
-This repo uses `/Users/igor/Documents/Codex/2026-07-19/alexcheng-dev/.github/workflows/ssh-runner.yml` for short-lived SSH access to a GitHub Actions runner.
+This repo uses `/Users/igor/Documents/sshworker/.github/workflows/ssh-runner.yml` for short-lived SSH access to a GitHub Actions runner.
 
 Reliable pattern:
 
@@ -22,7 +22,7 @@ Why this shape:
 Trigger and fetch a live SSH link:
 
 ```bash
-/Users/igor/Documents/Codex/2026-07-19/alexcheng-dev/scripts/ssh-runner-link.sh alexcheng-dev/ssh-runner ssh-runner.yml
+/Users/igor/Documents/sshworker/scripts/ssh-runner-link.sh alexcheng-dev/ssh-runner ssh-runner.yml
 ```
 
 The output prints:
@@ -65,6 +65,8 @@ That script:
 ## Notes
 
 - If GitHub returns a transient `HTTP 500: Failed to run workflow dispatch`, retrying a few seconds later usually works; `scripts/ssh-runner-link.sh` retries dispatch up to 3 times.
+- `scripts/ssh-runner-link.sh` now tries to dedupe dispatch retries: if GitHub returns an error but a fresh run was actually created, the script reuses that run instead of dispatching another one.
+- The launchers auto-cancel the just-created GitHub Actions run on failure by default (`CANCEL_FAILED_RUN=1`) so partial setup errors do not leave a new orphan worker behind.
 - The runner stays alive for about 6 hours after the artifact upload step.
 - Node.js was already present on the tested runner image (`node v22.23.1`, `npm 10.9.8` on July 19, 2026).
 
