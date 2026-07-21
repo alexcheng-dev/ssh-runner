@@ -115,6 +115,7 @@ mkdir -p "$STATE_DIR" "$HOME/node-http2"
 cat > "$STATE_DIR/9router-shell-env.sh" <<'SH'
 export WORKER_AGENTS_9ROUTER_PORT=20127
 export WORKER_AGENTS_9ROUTER_API_KEY=local-dev-key
+export WORKER_AGENTS_9ROUTER_MODEL=openai/gpt-5.4-mini
 export OPENAI_BASE_URL="http://127.0.0.1:20127/v1"
 export OPENAI_API_KEY="local-dev-key"
 SH
@@ -133,19 +134,29 @@ from pathlib import Path
 path = Path.home() / ".codex" / "config.toml"
 existing = path.read_text(encoding="utf-8") if path.exists() else ""
 lines = existing.splitlines()
+globals_ = []
+rest = []
+in_section = False
+for line in lines:
+    if line.lstrip().startswith("["):
+        in_section = True
+    if in_section:
+        rest.append(line)
+    else:
+        globals_.append(line)
 
-def set_line(key, value):
+def set_global_line(key, value):
     line = f'{key} = {value}'
-    for i, current in enumerate(lines):
+    for i, current in enumerate(globals_):
         if current.startswith(f"{key} = "):
-            lines[i] = line
+            globals_[i] = line
             return
-    lines.append(line)
+    globals_.append(line)
 
-set_line("model", '"opencode/big-pickle"')
-set_line("openai_base_url", '"http://127.0.0.1:20127/v1"')
-set_line("chatgpt_base_url", '"http://127.0.0.1:20127/backend-api"')
-path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+set_global_line("model", '"openai/gpt-5.4-mini"')
+set_global_line("openai_base_url", '"http://127.0.0.1:20127/v1"')
+set_global_line("chatgpt_base_url", '"http://127.0.0.1:20127/backend-api"')
+path.write_text("\n".join([*globals_, *rest]).rstrip() + "\n", encoding="utf-8")
 PY
 
 start_tunnel() {
@@ -248,7 +259,9 @@ if [[ -n "${CODEX_PORT:-}" ]]; then CODEX_URL="$(start_tunnel codex-web-local "$
 if [[ -n "${OPENCODE_PORT:-}" ]]; then OPENCODE_URL="$(start_tunnel opencode "$OPENCODE_PORT" || true)"; fi
 if [[ -n "${HERMES_PORT:-}" ]]; then HERMES_URL="$(start_tunnel hermes-webui "$HERMES_PORT" || true)"; fi
 
-python3 - "${WORKER_AGENTS_URL:-}" "${APP_PORT:-1456}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
+ROUTER_URL="$(start_tunnel 9router 20127 || true)"
+
+python3 - "${WORKER_AGENTS_URL:-}" "${APP_PORT:-1456}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
 import json
 import os
 import sys
@@ -256,13 +269,15 @@ from datetime import datetime, timezone
 
 worker_agents_url = sys.argv[1]
 port = int(sys.argv[2])
-codex_url = sys.argv[3]
-opencode_url = sys.argv[4]
-hermes_url = sys.argv[5]
+router_url = sys.argv[3]
+codex_url = sys.argv[4]
+opencode_url = sys.argv[5]
+hermes_url = sys.argv[6]
 state = {
     "status": "running" if worker_agents_url else "starting",
     "url": worker_agents_url,
     "port": port,
+    "router_url": router_url,
     "codex_web_url": codex_url,
     "opencode_url": opencode_url,
     "hermes_webui_url": hermes_url,
@@ -277,6 +292,7 @@ PY
 
 echo "__WORKER_AGENTS_DONE__"
 echo "PUBLIC_URL=${WORKER_AGENTS_URL:-}"
+echo "ROUTER_URL=${ROUTER_URL:-}"
 echo "CODEX_URL=${CODEX_URL:-}"
 echo "OPENCODE_URL=${OPENCODE_URL:-}"
 echo "HERMES_URL=${HERMES_URL:-}"
@@ -376,6 +392,7 @@ open(dst, "w", encoding="utf-8").write(data)
 PY
 
 PUBLIC_URL="$(grep -aoE 'PUBLIC_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^PUBLIC_URL=//' | tail -n 1 || true)"
+ROUTER_URL="$(grep -aoE 'ROUTER_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^ROUTER_URL=//' | tail -n 1 || true)"
 CODEX_URL="$(grep -aoE 'CODEX_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^CODEX_URL=//' | tail -n 1 || true)"
 OPENCODE_URL="$(grep -aoE 'OPENCODE_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^OPENCODE_URL=//' | tail -n 1 || true)"
 HERMES_URL="$(grep -aoE 'HERMES_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^HERMES_URL=//' | tail -n 1 || true)"
@@ -386,6 +403,8 @@ echo "$SSH_CMD"
 echo
 echo "workerAgents public URL:"
 echo "${PUBLIC_URL:-<missing>}"
+echo "9router public URL:"
+echo "${ROUTER_URL:-<missing>}"
 echo "codex_web public URL:"
 echo "${CODEX_URL:-<missing>}"
 echo "opencode public URL:"
@@ -394,16 +413,17 @@ echo "hermes_webui public URL:"
 echo "${HERMES_URL:-<missing>}"
 
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-agents.json" "$SSH_CMD" "${PUBLIC_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
+python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-agents.json" "$SSH_CMD" "${PUBLIC_URL:-}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
 
-out_path, ssh_cmd, public_url, codex_url, opencode_url, hermes_url = sys.argv[1:]
+out_path, ssh_cmd, public_url, router_url, codex_url, opencode_url, hermes_url = sys.argv[1:]
 payload = {
     "created_at": datetime.now(timezone.utc).isoformat(),
     "ssh": ssh_cmd,
     "worker_agents_url": public_url,
+    "router_url": router_url,
     "codex_web_url": codex_url,
     "opencode_url": opencode_url,
     "hermes_webui_url": hermes_url,
