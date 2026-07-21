@@ -19,11 +19,25 @@ TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
-if [[ -n "$BRANCH" ]]; then
-  gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$BRANCH" >/dev/null
-else
-  gh workflow run "$WORKFLOW" --repo "$REPO" >/dev/null
-fi
+run_workflow() {
+  if [[ -n "$BRANCH" ]]; then
+    gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$BRANCH" >/dev/null
+  else
+    gh workflow run "$WORKFLOW" --repo "$REPO" >/dev/null
+  fi
+}
+
+for attempt in {1..3}; do
+  if run_workflow; then
+    break
+  fi
+  if [[ "$attempt" == 3 ]]; then
+    echo "Failed to dispatch workflow after $attempt attempts" >&2
+    exit 1
+  fi
+  echo "Workflow dispatch failed; retrying in 3s..." >&2
+  sleep 3
+done
 
 sleep 2
 RUN_ID="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 1 --json databaseId --jq '.[0].databaseId')"

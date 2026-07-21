@@ -125,9 +125,21 @@ with open(out_path, "w", encoding="utf-8") as outf:
     if not started:
         raise SystemExit("Failed to reach remote shell prompt")
 
+    import base64
     with open(script_path, "r", encoding="utf-8") as f:
-        payload = f.read()
-    cmd = "bash <<'__CODEX_REMOTE__'\n" + payload + "\n__CODEX_REMOTE__\n"
+        encoded = base64.b64encode(f.read().encode("utf-8")).decode("ascii")
+
+    # Avoid pasting a shell heredoc into the interactive tmate terminal. If heredoc
+    # termination is missed, the remote shell stays at a `>` continuation prompt.
+    # Instead, append base64 chunks with simple printf commands, decode, then run.
+    remote_b64 = "/tmp/codexapp-remote-setup.b64"
+    remote_script = "/tmp/codexapp-remote-setup.sh"
+    lines = [f": > {remote_b64}"]
+    for i in range(0, len(encoded), 900):
+        lines.append(f"printf '%s' '{encoded[i:i+900]}' >> {remote_b64}")
+    lines.append(f"base64 -d {remote_b64} > {remote_script}")
+    lines.append(f"bash {remote_script}")
+    cmd = "\n".join(lines) + "\n"
     proc.stdin.write(cmd)
     proc.stdin.flush()
 
@@ -139,15 +151,17 @@ with open(out_path, "w", encoding="utf-8") as outf:
         buffer += ch
         outf.write(ch)
         outf.flush()
-        if "__CODEX_DONE__" in buffer and "PUBLIC_URL=" in buffer:
+        if "__CODEX_DONE__" in buffer and "trycloudflare.com" in buffer:
             break
 
-    proc.stdin.write("exit\n")
-    proc.stdin.flush()
+    # Do not send `exit`: in a tmate-backed runner, exiting the shell can tear down
+    # the share session and make the freshly printed SSH/Web links unusable. Close
+    # only this local SSH client after the detached tmux/cloudflared processes start.
+    proc.kill()
     try:
         proc.wait(timeout=15)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        pass
 PY
 
 SANITIZED_OUTPUT="$TMP_DIR/remote-output-clean.txt"
@@ -161,8 +175,8 @@ data = data.replace('\r', '')
 open(dst, "w", encoding="utf-8").write(data)
 PY
 
-PASSWORD="$(awk '/^PASSWORD=/{sub(/^PASSWORD=/,""); print}' "$SANITIZED_OUTPUT" | tail -n 1)"
-PUBLIC_URL="$(awk '/^PUBLIC_URL=/{sub(/^PUBLIC_URL=/,""); print}' "$SANITIZED_OUTPUT" | tail -n 1)"
+PASSWORD="$(grep -aoE 'PASSWORD=[a-z0-9]+-[a-z0-9]+-[a-z0-9]+' "$SANITIZED_OUTPUT" | sed 's/^PASSWORD=//' | tail -n 1 || true)"
+PUBLIC_URL="$(grep -aoE 'PUBLIC_URL=https://[-a-zA-Z0-9.]+trycloudflare.com' "$SANITIZED_OUTPUT" | sed 's/^PUBLIC_URL=//' | tail -n 1 || true)"
 
 echo
 echo "Worker SSH:"
