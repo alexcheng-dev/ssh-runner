@@ -24,6 +24,7 @@ require curl
 require python3
 
 cd "$ROOT_DIR"
+mkdir -p "$ROOT_DIR/outputs"
 
 echo "Triggering worker..."
 ./scripts/ssh-runner-link.sh "$REPO" "$WORKFLOW" > "$TMP_DIR/ssh-link.txt"
@@ -45,6 +46,7 @@ REMOTE_SCRIPT="$TMP_DIR/remote-setup.sh"
 cat > "$REMOTE_SCRIPT" <<'EOF'
 set -euo pipefail
 mkdir -p ~/codexapp-run ~/node-http2
+mkdir -p ~/.codex
 if ! command -v tmux >/dev/null 2>&1; then
   sudo apt-get update -qq
   sudo apt-get install -yqq tmux
@@ -75,8 +77,22 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 
-mkdir -p ~/.codex
 printf '%s\n' "${URL:-}" > ~/.codex/codexui-public-url
+python3 - <<'PY'
+import json
+import os
+from datetime import datetime, timezone
+
+state = {
+    "status": "running" if os.path.exists(os.path.expanduser("~/.codex/codexui-password")) and os.environ.get("URL") else "starting",
+    "codex_url": os.environ.get("URL", ""),
+    "password": open(os.path.expanduser("~/.codex/codexui-password"), "r", encoding="utf-8").readline().strip() if os.path.exists(os.path.expanduser("~/.codex/codexui-password")) else "",
+    "updated_at": datetime.now(timezone.utc).isoformat(),
+}
+with open(os.path.expanduser("~/.codex/worker-state.json"), "w", encoding="utf-8") as f:
+    json.dump(state, f)
+    f.write("\n")
+PY
 
 echo "__CODEX_DONE__"
 echo "PASSWORD=$(sed -n '1p' ~/.codex/codexui-password 2>/dev/null || true)"
@@ -192,6 +208,25 @@ echo "${PASSWORD:-<missing>}"
 echo
 echo "codexapp public URL:"
 echo "${PUBLIC_URL:-<missing>}"
+
+TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker.json" "$SSH_CMD" "$WEB_URL" "${PASSWORD:-}" "${PUBLIC_URL:-}" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+
+out_path, ssh_cmd, web_url, password, public_url = sys.argv[1:]
+payload = {
+    "created_at": datetime.now(timezone.utc).isoformat(),
+    "ssh": ssh_cmd,
+    "web": web_url,
+    "codex_password": password,
+    "codex_url": public_url,
+}
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(payload, f, indent=2)
+    f.write("\n")
+PY
 
 if [[ -z "${PUBLIC_URL:-}" ]]; then
   echo

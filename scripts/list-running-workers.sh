@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO="${REPO:-alexcheng-dev/ssh-runner}"
 WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
-RUN_LIMIT="${RUN_LIMIT:-20}"
+RUN_LIMIT="${RUN_LIMIT:-5}"
 PROBE_TIMEOUT="${PROBE_TIMEOUT:-8}"
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
@@ -20,6 +20,7 @@ require gh
 require python3
 require unzip
 require ssh
+INSPECT_SCRIPT="$(cd "$(dirname "$0")" && pwd)/inspect-worker.sh"
 
 RUN_IDS="$(gh run list \
   --repo "$REPO" \
@@ -59,50 +60,9 @@ while IFS= read -r RUN_ID; do
 
     SSH_DEST="$(printf '%s\n' "$SSH_CMD" | awk '{print $2}' 2>/dev/null || true)"
     if [[ -n "${SSH_DEST:-}" ]]; then
-      REMOTE_INFO="$(
-        python3 - "$SSH_DEST" "$PROBE_TIMEOUT" <<'PY'
-import re
-import subprocess
-import sys
-
-ssh_dest = sys.argv[1]
-cmd = (
-    "q\n"
-    "CODEX_URL=$(sed -n '1p' ~/.codex/codexui-public-url 2>/dev/null || true); "
-    "if [ -z \"$CODEX_URL\" ]; then CODEX_URL=$(sed -n 's/.*\\(https://[-a-zA-Z0-9.]*trycloudflare\\.com\\).*/\\1/p' ~/codexapp-cloudflared.log 2>/dev/null | tail -n 1 || true); fi; "
-    "CODEX_PASSWORD=$(sed -n '1p' ~/.codex/codexui-password 2>/dev/null || true); "
-    "printf 'codex_url\\t%s\\ncodex_password\\t%s\\n' \"$CODEX_URL\" \"$CODEX_PASSWORD\"\n"
-    "exit\n"
-)
-try:
-    proc = subprocess.run(
-        [
-            "ssh",
-            "-tt",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=8",
-            ssh_dest,
-        ],
-        input=cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=int(sys.argv[2]),
-        check=False,
-    )
-    output = proc.stdout
-except subprocess.TimeoutExpired as exc:
-    output = exc.stdout or ""
-    if isinstance(output, bytes):
-        output = output.decode("utf-8", errors="ignore")
-
-clean = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", output).replace("\r", "")
-print(clean)
-PY
-      )"
-      CODEX_WEB_URL="$(printf '%s\n' "$REMOTE_INFO" | awk -F '\t' '$1=="codex_url"{print $2}' | tail -n 1)"
-      CODEX_PASSWORD="$(printf '%s\n' "$REMOTE_INFO" | awk -F '\t' '$1=="codex_password"{print $2}' | tail -n 1)"
+      REMOTE_INFO="$(PROBE_TIMEOUT="$PROBE_TIMEOUT" "$INSPECT_SCRIPT" "$SSH_DEST" 2>/dev/null || true)"
+      CODEX_WEB_URL="$(python3 -c 'import json,sys; s=sys.stdin.read().strip(); print(json.loads(s).get("codex_url","")) if s else None' <<<"$REMOTE_INFO" 2>/dev/null || true)"
+      CODEX_PASSWORD="$(python3 -c 'import json,sys; s=sys.stdin.read().strip(); print(json.loads(s).get("password","")) if s else None' <<<"$REMOTE_INFO" 2>/dev/null || true)"
     fi
   fi
 

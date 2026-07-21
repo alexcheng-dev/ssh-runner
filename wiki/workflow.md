@@ -40,6 +40,12 @@ List all currently running worker instances and their live SSH/Web links when th
 The listing script also tries to query each worker for a live Codex Web
 Cloudflare URL and the current Codex Web password.
 
+Inspect one worker directly:
+
+```bash
+./scripts/inspect-worker.sh <ssh-destination>
+```
+
 ## Notes
 
 - If GitHub returns a transient `HTTP 500: Failed to run workflow dispatch`, retrying a few seconds later usually works; `scripts/ssh-runner-link.sh` retries dispatch up to 3 times.
@@ -76,4 +82,4 @@ If the local launcher connects through tmate for setup, do not send `exit` to th
 
 When automating the interactive tmate SSH session, do not paste the remote setup as a heredoc. The terminal can echo the script text, causing marker-based wait loops to match strings like `PUBLIC_URL=` before execution, or leave the remote shell stuck at a `>` continuation prompt. Upload the script as base64 chunks, decode it on the worker, then run it.
 When waiting for remote setup completion, require the full Cloudflare hostname marker such as `trycloudflare.com`, not just `PUBLIC_URL=`; output is read character-by-character and can otherwise stop before the URL body is captured.
-The worker launcher persists the resolved Codex Web URL at `~/.codex/codexui-public-url` on the runner so inventory scripts can report it later without depending on transient `cloudflared` startup log lines.
+The worker launcher persists runner state in `~/.codex/worker-state.json` and still writes `~/.codex/codexui-public-url`. Inventory scripts should prefer the JSON state file over scraping transient `cloudflared` startup log lines.

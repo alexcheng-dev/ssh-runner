@@ -11,3 +11,4 @@ Keep this file short. Put durable workflow details in `./wiki/*.md` and reusable
 - `/Users/igor/Documents/sshworker/scripts/ssh-runner-link.sh` — trigger the workflow, wait for the `ssh-link` artifact, and print the live SSH/Web links.
 - `/Users/igor/Documents/sshworker/scripts/run-codexapp-worker.sh` — end-to-end local launcher: start the GitHub Actions worker, fetch SSH details, connect, start `codexapp` in detached tmux, expose it with `cloudflared`, and print the public URL and password.
 - `/Users/igor/Documents/sshworker/scripts/list-running-workers.sh` — list in-progress workflow runs and print their live SSH/Web links when the artifact is ready.
+- `/Users/igor/Documents/sshworker/scripts/inspect-worker.sh` — inspect one worker over interactive tmate SSH and print its persisted Codex worker state JSON.
