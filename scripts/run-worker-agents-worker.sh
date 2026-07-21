@@ -8,6 +8,7 @@ APP_DIR="$ROOT_DIR/workerAgents"
 ROUTER_DIR="${ROUTER_DIR:-/Users/igor/Git-projects/9router}"
 ROUTER_GIT_URL="${ROUTER_GIT_URL:-https://github.com/phaneron23/9router.git}"
 HERMES_WEBUI_DIR="${HERMES_WEBUI_DIR:-/Users/igor/Git-projects/hermes-webui}"
+HERMES_WEBUI_GIT_URL="${HERMES_WEBUI_GIT_URL:-https://github.com/nesquena/hermes-webui.git}"
 TUNNEL_CLIENT_PATH="$ROOT_DIR/scripts/lolgames_tunnel.py"
 APP_PORT="${APP_PORT:-1456}"
 TMP_DIR="$(mktemp -d)"
@@ -56,7 +57,7 @@ if [[ "${ROUTER_UPLOAD:-0}" == "1" && ! -d "$ROUTER_DIR" ]]; then
   exit 1
 fi
 
-if [[ ! -d "$HERMES_WEBUI_DIR" ]]; then
+if [[ "${HERMES_UPLOAD:-0}" == "1" && ! -d "$HERMES_WEBUI_DIR" ]]; then
   echo "Missing Hermes WebUI directory: $HERMES_WEBUI_DIR" >&2
   exit 1
 fi
@@ -107,15 +108,18 @@ if [[ "${ROUTER_UPLOAD:-0}" == "1" ]]; then
     "$(basename "$ROUTER_DIR")"
 fi
 
-HERMES_ARCHIVE_PATH="$TMP_DIR/hermes-webui.tgz"
-tar \
-  --exclude='.git' \
-  --exclude='node_modules' \
-  --exclude='.venv' \
-  --exclude='venv' \
-  -czf "$HERMES_ARCHIVE_PATH" \
-  -C "$(dirname "$HERMES_WEBUI_DIR")" \
-  "$(basename "$HERMES_WEBUI_DIR")"
+HERMES_ARCHIVE_PATH=""
+if [[ "${HERMES_UPLOAD:-0}" == "1" ]]; then
+  HERMES_ARCHIVE_PATH="$TMP_DIR/hermes-webui.tgz"
+  tar \
+    --exclude='.git' \
+    --exclude='node_modules' \
+    --exclude='.venv' \
+    --exclude='venv' \
+    -czf "$HERMES_ARCHIVE_PATH" \
+    -C "$(dirname "$HERMES_WEBUI_DIR")" \
+    "$(basename "$HERMES_WEBUI_DIR")"
+fi
 
 REMOTE_SCRIPT="$TMP_DIR/remote-worker-agents-setup.sh"
 cat > "$REMOTE_SCRIPT" <<'EOF'
@@ -195,9 +199,13 @@ elif [[ ! -f "$ROUTER_HOME/package.json" ]]; then
   rm -rf "$ROUTER_HOME"
   git clone --depth 1 "$ROUTER_GIT_URL" "$ROUTER_HOME"
 fi
-rm -rf "$HERMES_WEBUI_HOME"
-mkdir -p "$HERMES_WEBUI_HOME"
-tar -xzf /tmp/hermes-webui.tgz -C "$HOME"
+if [[ -f /tmp/hermes-webui.tgz ]]; then
+  rm -rf "$HERMES_WEBUI_HOME"
+  tar -xzf /tmp/hermes-webui.tgz -C "$HOME"
+elif [[ ! -f "$HERMES_WEBUI_HOME/bootstrap.py" ]]; then
+  rm -rf "$HERMES_WEBUI_HOME"
+  git clone --depth 1 "$HERMES_WEBUI_GIT_URL" "$HERMES_WEBUI_HOME"
+fi
 
 cd "$APP_HOME"
 npm install
@@ -360,7 +368,6 @@ with open(out_path, "w", encoding="utf-8") as outf:
 
     for local_path, remote_b64, remote_out in [
         (archive_path, "/tmp/workerAgents.tgz.b64", "/tmp/workerAgents.tgz"),
-        (hermes_archive_path, "/tmp/hermes-webui.tgz.b64", "/tmp/hermes-webui.tgz"),
         (tunnel_client_path, "/tmp/lolgames_tunnel.py.b64", "/tmp/lolgames_tunnel.py"),
         (script_path, "/tmp/worker-agents-setup.sh.b64", "/tmp/worker-agents-setup.sh"),
     ]:
@@ -369,10 +376,10 @@ with open(out_path, "w", encoding="utf-8") as outf:
         for i in range(0, len(encoded), 900):
             lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> {remote_b64}")
         lines.append(f"base64 -d {remote_b64} > {remote_out}")
-        if remote_out.endswith(".sh"):
-            lines.append(f"chmod +x {remote_out}")
-        proc.stdin.write("\n".join(lines) + "\n")
-        proc.stdin.flush()
+    if remote_out.endswith(".sh"):
+        lines.append(f"chmod +x {remote_out}")
+    proc.stdin.write("\n".join(lines) + "\n")
+    proc.stdin.flush()
 
     if router_archive_path:
         encoded = base64.b64encode(open(router_archive_path, "rb").read()).decode("ascii")
@@ -380,6 +387,15 @@ with open(out_path, "w", encoding="utf-8") as outf:
         for i in range(0, len(encoded), 900):
             lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> /tmp/9router.tgz.b64")
         lines.append("base64 -d /tmp/9router.tgz.b64 > /tmp/9router.tgz")
+        proc.stdin.write("\n".join(lines) + "\n")
+        proc.stdin.flush()
+
+    if hermes_archive_path:
+        encoded = base64.b64encode(open(hermes_archive_path, "rb").read()).decode("ascii")
+        lines = [": > /tmp/hermes-webui.tgz.b64"]
+        for i in range(0, len(encoded), 900):
+            lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> /tmp/hermes-webui.tgz.b64")
+        lines.append("base64 -d /tmp/hermes-webui.tgz.b64 > /tmp/hermes-webui.tgz")
         proc.stdin.write("\n".join(lines) + "\n")
         proc.stdin.flush()
 
