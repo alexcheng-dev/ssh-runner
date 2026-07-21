@@ -75,6 +75,9 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 
+mkdir -p ~/.codex
+printf '%s\n' "${URL:-}" > ~/.codex/codexui-public-url
+
 echo "__CODEX_DONE__"
 echo "PASSWORD=$(sed -n '1p' ~/.codex/codexui-password 2>/dev/null || true)"
 echo "PUBLIC_URL=${URL:-}"

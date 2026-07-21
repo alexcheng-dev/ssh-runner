@@ -3,6 +3,8 @@ set -euo pipefail
 
 REPO="${REPO:-alexcheng-dev/ssh-runner}"
 WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
+RUN_LIMIT="${RUN_LIMIT:-20}"
+PROBE_TIMEOUT="${PROBE_TIMEOUT:-8}"
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
@@ -23,7 +25,7 @@ RUN_IDS="$(gh run list \
   --repo "$REPO" \
   --workflow "$WORKFLOW" \
   --status in_progress \
-  --limit 20 \
+  --limit "$RUN_LIMIT" \
   --json databaseId \
   --jq '.[].databaseId')"
 
@@ -58,7 +60,7 @@ while IFS= read -r RUN_ID; do
     SSH_DEST="$(printf '%s\n' "$SSH_CMD" | awk '{print $2}' 2>/dev/null || true)"
     if [[ -n "${SSH_DEST:-}" ]]; then
       REMOTE_INFO="$(
-        python3 - "$SSH_DEST" <<'PY'
+        python3 - "$SSH_DEST" "$PROBE_TIMEOUT" <<'PY'
 import re
 import subprocess
 import sys
@@ -66,7 +68,8 @@ import sys
 ssh_dest = sys.argv[1]
 cmd = (
     "q"
-    "CODEX_URL=$(sed -n 's/.*\\(https://[-a-zA-Z0-9.]*trycloudflare\\.com\\).*/\\1/p' ~/codexapp-cloudflared.log 2>/dev/null | tail -n 1 || true); "
+    "CODEX_URL=$(sed -n '1p' ~/.codex/codexui-public-url 2>/dev/null || true); "
+    "if [ -z \"$CODEX_URL\" ]; then CODEX_URL=$(sed -n 's/.*\\(https://[-a-zA-Z0-9.]*trycloudflare\\.com\\).*/\\1/p' ~/codexapp-cloudflared.log 2>/dev/null | tail -n 1 || true); fi; "
     "CODEX_PASSWORD=$(sed -n '1p' ~/.codex/codexui-password 2>/dev/null || true); "
     "printf 'codex_url\\t%s\\ncodex_password\\t%s\\n' \"$CODEX_URL\" \"$CODEX_PASSWORD\"\n"
     "exit\n"
@@ -85,7 +88,7 @@ try:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        timeout=15,
+        timeout=int(sys.argv[2]),
         check=False,
     )
     output = proc.stdout

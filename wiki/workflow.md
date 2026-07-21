@@ -76,3 +76,4 @@ If the local launcher connects through tmate for setup, do not send `exit` to th
 
 When automating the interactive tmate SSH session, do not paste the remote setup as a heredoc. The terminal can echo the script text, causing marker-based wait loops to match strings like `PUBLIC_URL=` before execution, or leave the remote shell stuck at a `>` continuation prompt. Upload the script as base64 chunks, decode it on the worker, then run it.
 When waiting for remote setup completion, require the full Cloudflare hostname marker such as `trycloudflare.com`, not just `PUBLIC_URL=`; output is read character-by-character and can otherwise stop before the URL body is captured.
+The worker launcher persists the resolved Codex Web URL at `~/.codex/codexui-public-url` on the runner so inventory scripts can report it later without depending on transient `cloudflared` startup log lines.
