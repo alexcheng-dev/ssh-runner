@@ -97,10 +97,11 @@ LOLGAMES_FIELDS="worker_agents router codex_web opencode hermes_webui"
 while IFS= read -r RUN_ID; do
   [[ -n "$RUN_ID" ]] || continue
 
-  STATUS_LINE="$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '[.display_title, .status, (.html_url // "")] | @tsv')"
+  STATUS_LINE="$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '[.display_title, .status, (.html_url // ""), (.created_at // "")] | @tsv')"
   TITLE="$(printf '%s\n' "$STATUS_LINE" | cut -f1)"
   STATUS="$(printf '%s\n' "$STATUS_LINE" | cut -f2)"
   RUN_URL="$(printf '%s\n' "$STATUS_LINE" | cut -f3)"
+  CREATED_AT="$(printf '%s\n' "$STATUS_LINE" | cut -f4)"
 
   ARTIFACT_ID="$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[]? | select(.name=="ssh-link" and .expired==false) | .id' | head -n 1 || true)"
 
@@ -125,6 +126,7 @@ while IFS= read -r RUN_ID; do
   fi
 
   printf 'run_id\t%s\n' "$RUN_ID"
+  printf 'created_at\t%s\n' "${CREATED_AT:-<unknown>}"
   printf 'title\t%s\n' "$TITLE"
   printf 'status\t%s\n' "$STATUS"
   printf 'run_url\t%s\n' "$RUN_URL"
