@@ -147,7 +147,7 @@ if [[ "${INSTALL_CHILD_DEPS:-0}" == "1" ]]; then
   rm -rf "$HERMES_WEBUI_HOME"
   git clone --depth 1 "$HERMES_WEBUI_GIT_URL" "$HERMES_WEBUI_HOME"
   trace "install child CLIs"
-  npm install -g codexapp opencode-ai
+  npm install -g codexapp opencode-ai openclaw
 fi
 if [[ "${INSTALL_CHILD_DEPS:-0}" == "1" && "${REFRESH_START_AGENTS:-0}" == "1" && ! -x "$HOME/.local/bin/hermes" ]]; then
   trace "bootstrap Hermes"
@@ -168,7 +168,7 @@ done
 
 if [[ "${REFRESH_START_AGENTS:-0}" == "1" ]]; then
   trace "start child agents"
-  for agent_id in codex-web-local opencode hermes-webui; do
+  for agent_id in codex-web-local opencode hermes-webui openclaw; do
     curl -fsS -X POST "http://127.0.0.1:${APP_PORT:-1456}/api/agents/${agent_id}/restart" >/dev/null || true
     sleep 8
   done
@@ -194,7 +194,7 @@ ROUTER_URL="$(start_tunnel 9router 20127 || true)"
 python3 - "$STATUS_PATH" <<'PY' > "$STATE_DIR/ports.env"
 import json, sys
 agents = {a.get('id'): a for a in json.load(open(sys.argv[1])).get('agents', [])}
-for key, env in [('codex-web-local', 'CODEX_PORT'), ('opencode', 'OPENCODE_PORT'), ('hermes-webui', 'HERMES_PORT')]:
+for key, env in [('codex-web-local', 'CODEX_PORT'), ('opencode', 'OPENCODE_PORT'), ('hermes-webui', 'HERMES_PORT'), ('openclaw', 'OPENCLAW_PORT')]:
     agent = agents.get(key) or {}
     print(f"{env}={agent.get('port') if agent.get('state') == 'running' else ''}")
 PY
@@ -203,14 +203,16 @@ source "$STATE_DIR/ports.env"
 CODEX_URL=""
 OPENCODE_URL=""
 HERMES_URL=""
+OPENCLAW_URL=""
 if [[ -n "${CODEX_PORT:-}" ]]; then CODEX_URL="$(start_tunnel codex-web-local "$CODEX_PORT" || true)"; fi
 if [[ -n "${OPENCODE_PORT:-}" ]]; then OPENCODE_URL="$(start_tunnel opencode "$OPENCODE_PORT" || true)"; fi
 if [[ -n "${HERMES_PORT:-}" ]]; then HERMES_URL="$(start_tunnel hermes-webui "$HERMES_PORT" || true)"; fi
+if [[ -n "${OPENCLAW_PORT:-}" ]]; then OPENCLAW_URL="$(start_tunnel openclaw "$OPENCLAW_PORT" || true)"; fi
 
-python3 - "${WORKER_AGENTS_URL:-}" "${APP_PORT:-1456}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
+python3 - "${WORKER_AGENTS_URL:-}" "${APP_PORT:-1456}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" "${OPENCLAW_URL:-}" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
-worker_agents_url, port, router_url, codex_url, opencode_url, hermes_url = sys.argv[1:]
+worker_agents_url, port, router_url, codex_url, opencode_url, hermes_url, openclaw_url = sys.argv[1:]
 state = {
     'status': 'running' if worker_agents_url else 'starting',
     'url': worker_agents_url,
@@ -220,6 +222,7 @@ state = {
     'codex_web_url': codex_url,
     'opencode_url': opencode_url,
     'hermes_webui_url': hermes_url,
+    'openclaw_url': openclaw_url,
     'updated_at': datetime.now(timezone.utc).isoformat(),
 }
 state_dir = os.path.expanduser('~/.worker-agents')
@@ -235,6 +238,7 @@ echo "ROUTER_URL=${ROUTER_URL:-}"
 echo "CODEX_URL=${CODEX_URL:-}"
 echo "OPENCODE_URL=${OPENCODE_URL:-}"
 echo "HERMES_URL=${HERMES_URL:-}"
+echo "OPENCLAW_URL=${OPENCLAW_URL:-}"
 EOS
 
 REMOTE_OUTPUT="$TMP_DIR/remote-output.txt"
@@ -306,9 +310,86 @@ ROUTER_URL="$(grep -aoE 'ROUTER_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+
 CODEX_URL="$(grep -aoE 'CODEX_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^CODEX_URL=//' | tail -n 1 || true)"
 OPENCODE_URL="$(grep -aoE 'OPENCODE_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^OPENCODE_URL=//' | tail -n 1 || true)"
 HERMES_URL="$(grep -aoE 'HERMES_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^HERMES_URL=//' | tail -n 1 || true)"
+OPENCLAW_URL="$(grep -aoE 'OPENCLAW_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^OPENCLAW_URL=//' | tail -n 1 || true)"
 
 if [[ -z "${PUBLIC_URL:-}" ]]; then
-  echo "Refresh finished but public URL was missing." >&2
+  STATE_FALLBACK="$TMP_DIR/remote-state-fallback.txt"
+  python3 - "$ROOT_DIR" "$SSH_TARGET" "$STATE_FALLBACK" <<'PY' || true
+import pathlib
+import shlex
+import subprocess
+import sys
+
+root_dir = pathlib.Path(sys.argv[1])
+ssh_target = sys.argv[2]
+out_path = pathlib.Path(sys.argv[3])
+remote_cmd = "cat ~/.worker-agents/state.json 2>/dev/null || true"
+if "tmate.io" in ssh_target:
+    dest = ssh_target.removeprefix("ssh ").strip()
+    argv = [str(root_dir / "tests" / "lib" / "ssh_tmate_exec.py"), dest, remote_cmd, "--timeout", "30"]
+    timeout = 45
+else:
+    ssh_cmd = ssh_target if ssh_target.strip().startswith("ssh ") else f"ssh {shlex.quote(ssh_target)}"
+    argv = shlex.split(ssh_cmd) + [remote_cmd]
+    timeout = 20
+proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout, check=False)
+out_path.write_text(proc.stdout or "", encoding="utf-8")
+PY
+  python3 - "$STATE_FALLBACK" "$TMP_DIR/state.env" <<'PY'
+import json, re, sys
+text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+text = re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]', '', text).replace('\r', '')
+match = re.search(r'\{[^{}]*"worker_agents_url"[^{}]*\}', text, re.S)
+data = json.loads(match.group(0)) if match else {}
+with open(sys.argv[2], 'w', encoding='utf-8') as f:
+    for key, name in [
+        ('worker_agents_url','PUBLIC_URL'), ('router_url','ROUTER_URL'),
+        ('codex_web_url','CODEX_URL'), ('opencode_url','OPENCODE_URL'),
+        ('hermes_webui_url','HERMES_URL'),
+        ('openclaw_url','OPENCLAW_URL')]:
+        val = str(data.get(key) or '')
+        f.write(f'{name}={val}\n')
+PY
+  # shellcheck disable=SC1090
+  source "$TMP_DIR/state.env" 2>/dev/null || true
+fi
+
+echo "workerAgents public URL:"
+echo "${PUBLIC_URL:-<missing>}"
+echo "9router public URL:"
+echo "${ROUTER_URL:-<missing>}"
+echo "codex_web public URL:"
+echo "${CODEX_URL:-<missing>}"
+echo "opencode public URL:"
+echo "${OPENCODE_URL:-<missing>}"
+echo "hermes_webui public URL:"
+echo "${HERMES_URL:-<missing>}"
+echo "openclaw public URL:"
+echo "${OPENCLAW_URL:-<missing>}"
+
+python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-refresh.json" "$SSH_TARGET" "${PUBLIC_URL:-}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" "${OPENCLAW_URL:-}" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+
+out_path, ssh_dest, public_url, router_url, codex_url, opencode_url, hermes_url, openclaw_url = sys.argv[1:]
+payload = {
+    "created_at": datetime.now(timezone.utc).isoformat(),
+    "ssh": ssh_dest,
+    "worker_agents_url": public_url,
+    "router_url": router_url,
+    "codex_web_url": codex_url,
+    "opencode_url": opencode_url,
+    "hermes_webui_url": hermes_url,
+    "openclaw_url": openclaw_url,
+}
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(payload, f, indent=2)
+    f.write("\n")
+PY
+
+if [[ -z "${PUBLIC_URL:-}" ]]; then
+  echo "Warning: workerAgents lolgames URL not found yet." >&2
   exit 1
 fi
 

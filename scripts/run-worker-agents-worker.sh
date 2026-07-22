@@ -255,7 +255,7 @@ if [[ "${INSTALL_CHILD_DEPS:-0}" == "1" ]]; then
   rm -rf "$HERMES_WEBUI_HOME"
   git clone --depth 1 "$HERMES_WEBUI_GIT_URL" "$HERMES_WEBUI_HOME"
   trace "install child CLIs"
-  npm install -g codexapp opencode-ai
+  npm install -g codexapp opencode-ai openclaw
 fi
 
 if [[ "${INSTALL_CHILD_DEPS:-0}" == "1" && "${START_CHILD_AGENTS:-0}" == "1" && ! -x "$HOME/.local/bin/hermes" ]]; then
@@ -277,7 +277,7 @@ done
 
 if [[ "${START_CHILD_AGENTS:-0}" == "1" ]]; then
   trace "start child agents"
-  for agent_id in codex-web-local opencode hermes-webui; do
+  for agent_id in codex-web-local opencode hermes-webui openclaw; do
     curl -fsS -X POST "http://127.0.0.1:${APP_PORT:-1456}/api/agents/${agent_id}/restart" >/dev/null || true
     sleep 8
   done

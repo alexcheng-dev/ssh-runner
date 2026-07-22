@@ -84,6 +84,7 @@ print((data.get("router_url") or "").strip())
 print((data.get("codex_web_url") or "").strip())
 print((data.get("opencode_url") or "").strip())
 print((data.get("hermes_webui_url") or "").strip())
+print((data.get("openclaw_url") or "").strip())
 PY
 }
 
@@ -100,7 +101,7 @@ if [[ -z "${RUN_IDS:-}" ]]; then
   echo "No in-progress $WORKFLOW runs found for $REPO."
   exit 0
 fi
-LOLGAMES_FIELDS="worker_agents router codex_web opencode hermes_webui"
+LOLGAMES_FIELDS="worker_agents router codex_web opencode hermes_webui openclaw"
 
 while IFS= read -r RUN_ID; do
   [[ -n "$RUN_ID" ]] || continue

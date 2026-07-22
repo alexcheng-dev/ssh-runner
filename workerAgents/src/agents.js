@@ -169,10 +169,30 @@ function ensureOpenClawConfig() {
     }
   })();
 
+  const routerProviderId = '9router';
+  const routerModel = routerDefaultModel();
+  const routerQualifiedModel = `${routerProviderId}/${routerModel}`;
+  existing.models ||= {};
+  existing.models.mode ||= 'merge';
+  existing.models.providers ||= {};
+  existing.models.providers[routerProviderId] = {
+    ...(existing.models.providers[routerProviderId] || {}),
+    baseUrl: routerBaseUrl(),
+    apiKey: routerApiKey(),
+    api: 'openai-responses',
+    authHeader: true,
+    models: [
+      {
+        id: routerModel,
+        name: routerModel,
+        api: 'openai-responses'
+      }
+    ]
+  };
   existing.agents ||= {};
   existing.agents.defaults ||= {};
-  existing.agents.defaults.model = { primary: 'openai-codex/gpt-5.4-mini' };
-  existing.agents.defaults.models = { 'openai-codex/gpt-5.4-mini': {} };
+  existing.agents.defaults.model = { primary: routerQualifiedModel };
+  existing.agents.defaults.models = { [routerQualifiedModel]: {} };
   existing.gateway ||= {};
   existing.gateway.mode ||= 'local';
   existing.gateway.auth ||= {
@@ -393,7 +413,8 @@ const builtInDefinitions = [
       UV_USE_IO_URING: '0',
       PLAYWRIGHT_BROWSERS_PATH: '/root/.cache/ms-playwright',
       NODE_OPTIONS: `--require ${openClawPatchPath()}`,
-      OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+      OPENAI_BASE_URL: routerBaseUrl(),
+      OPENAI_API_KEY: routerApiKey(),
       OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || '',
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
       BRAVE_API_KEY: process.env.BRAVE_API_KEY || ''
