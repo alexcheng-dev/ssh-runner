@@ -30,6 +30,41 @@ function commandFromEnv(envName, fallback) {
   return process.env[envName] || fallback;
 }
 
+function sh(command, options = {}) {
+  return spawn('/bin/sh', ['-lc', command], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, PATH: defaultPath, ...(options.env || {}) },
+    ...options
+  });
+}
+
+async function runCommand(command, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = sh(command, options);
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk) => { stdout += chunk; });
+    child.stderr?.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error((stderr || stdout || `command exited ${code}`).trim()));
+      }
+    });
+  });
+}
+
+function commandExists(command) {
+  try {
+    execSync(`command -v ${command}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, PATH: defaultPath } });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function applyPortTemplate(template, port) {
   return template.replaceAll('{port}', String(port));
 }
@@ -49,6 +84,37 @@ function routerApiKey() {
 
 function routerDefaultModel() {
   return process.env.WORKER_AGENTS_9ROUTER_MODEL || 'openai/gpt-5.4-mini';
+}
+
+async function ensureGlobalPackage(commandName, packageName) {
+  if (commandExists(commandName)) return false;
+  await runCommand(`npm install -g ${packageName}`);
+  return true;
+}
+
+async function ensureHermesWebUiRepo() {
+  const hermesWebUiDir = process.env.HERMES_WEBUI_DIR || path.join(os.homedir(), 'hermes-webui');
+  const repo = process.env.HERMES_WEBUI_GIT_URL || 'https://github.com/nesquena/hermes-webui.git';
+  if (fs.existsSync(path.join(hermesWebUiDir, 'bootstrap.py'))) return { changed: false, dir: hermesWebUiDir };
+  await runCommand(`rm -rf "${hermesWebUiDir}" && git clone --depth 1 "${repo}" "${hermesWebUiDir}"`);
+  return { changed: true, dir: hermesWebUiDir };
+}
+
+async function ensureHermesInstalled(port) {
+  const { changed, dir } = await ensureHermesWebUiRepo();
+  const hasBootstrap = fs.existsSync(path.join(dir, 'bootstrap.py'));
+  if (commandExists('hermes') && (commandExists('hermes-webui') || hasBootstrap)) {
+    return changed;
+  }
+  if (hasBootstrap) {
+    try {
+      await runCommand('curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --skip-setup --skip-browser --non-interactive');
+    } catch {
+      // bootstrap.py from the cloned repo is still a viable fallback launch path
+    }
+    return true;
+  }
+  throw new Error('Hermes WebUI repo is missing bootstrap.py');
 }
 
 function defaultHermesWebUiCommand(port) {
@@ -346,6 +412,7 @@ const builtInDefinitions = [
     readyPatterns: [/http:\/\/(localhost|127\.0\.0\.1):/i, /listening/i],
     beforeStart: async () => {
       await refreshTokenIfNeeded();
+      await ensureGlobalPackage('codexapp', 'codexapp');
       ensureCodexConfig();
       ensureCodexWebUi9RouterConfig();
       ensureOpenClawPatch();
@@ -365,6 +432,9 @@ const builtInDefinitions = [
       port
     ),
     readyPatterns: [/http:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0):/i, /listening/i],
+    beforeStart: async () => {
+      await ensureGlobalPackage('opencode', 'opencode-ai');
+    },
     env: () => buildBaseEnv({
       OPENAI_BASE_URL: routerBaseUrl(),
       OPENAI_API_KEY: routerApiKey()
@@ -386,6 +456,7 @@ const builtInDefinitions = [
     readyPatterns: [/\/health/i, /HTTP server/i, /http:\/\/(127\.0\.0\.1|0\.0\.0\.0):/i],
     beforeStart: async () => {
       await refreshTokenIfNeeded();
+      await ensureHermesInstalled(18935);
       importCodexAuthForHermes();
     },
     env: (port) => buildBaseEnv({
