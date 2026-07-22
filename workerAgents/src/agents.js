@@ -462,6 +462,8 @@ const builtInDefinitions = [
     env: (port) => buildBaseEnv({
       HERMES_WEBUI_HOST: '0.0.0.0',
       HERMES_WEBUI_PORT: String(port),
+      HERMES_WEBUI_SKIP_ONBOARDING: '1',
+      HERMES_WEBUI_PRESERVE_ENV: '1',
       UV_LINK_MODE: 'copy'
     })
   },
