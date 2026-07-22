@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="${REPO:-alexcheng-dev/agent-workspace}"
 WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
 TUNNEL_CLIENT_PATH="$ROOT_DIR/scripts/lolgames_tunnel.py"
+SYNC_AGENT_WORKSPACE="${SYNC_AGENT_WORKSPACE:-1}"
+CANCEL_OLDER_WORKERS="${CANCEL_OLDER_WORKERS:-0}"
 TMP_DIR="$(mktemp -d)"
 RUN_ID=""
 LAUNCH_OK=0
@@ -44,6 +46,18 @@ if [[ ! -f "$TUNNEL_CLIENT_PATH" ]]; then
 fi
 
 mkdir -p "$ROOT_DIR/outputs"
+
+if [[ "$SYNC_AGENT_WORKSPACE" == "1" ]]; then
+  ./scripts/ensure-agent-workspace-repo.sh
+fi
+
+if [[ "$CANCEL_OLDER_WORKERS" == "1" ]]; then
+  while IFS= read -r old_run_id; do
+    [[ -n "$old_run_id" ]] || continue
+    echo "Canceling older in-progress worker run: $old_run_id" >&2
+    gh run cancel "$old_run_id" --repo "$REPO" >/dev/null 2>&1 || true
+  done < <(gh run list --repo "$REPO" --workflow "$WORKFLOW" --status in_progress --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true)
+fi
 
 echo "Triggering worker..."
 SSH_RUNNER_META_OUT="$TMP_DIR/ssh-runner-meta.env" ./scripts/ssh-runner-link.sh "$REPO" "$WORKFLOW" > "$TMP_DIR/ssh-link.txt"

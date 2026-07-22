@@ -39,7 +39,7 @@ Ensure the public runner repo exists and has the current workflow/tunnel client:
 ./scripts/ensure-agent-workspace-repo.sh
 ```
 
-`ensure-agent-workspace-repo.sh` creates `alexcheng-dev/agent-workspace` as a public repo when missing, then syncs `.github/workflows/ssh-runner.yml` and `scripts/lolgames_tunnel.py` there. The worker launchers default to this repo; override with `REPO=owner/name` only when intentionally testing another Actions workspace.
+`ensure-agent-workspace-repo.sh` creates `alexcheng-dev/agent-workspace` as a public repo when missing, then syncs `.github/workflows/ssh-runner.yml` and `scripts/lolgames_tunnel.py` there. The worker launchers default to this repo and run this sync preflight by default (`SYNC_AGENT_WORKSPACE=1`); override with `REPO=owner/name` only when intentionally testing another Actions workspace.
 
 List all currently running worker instances and their live SSH links when the
 `ssh-link` artifact is already available:
@@ -72,19 +72,33 @@ Launch `workerAgents` on a fresh worker by uploading the local repo copy instead
 
 That script:
 
-1. starts a fresh SSH runner from `alexcheng-dev/agent-workspace`
+1. syncs `agent-workspace`, optionally cancels older in-progress worker runs, then starts a fresh SSH runner from `alexcheng-dev/agent-workspace`
 2. uploads `/Users/igor/Documents/sshworker/workerAgents`
-3. clones 9Router and Hermes WebUI on the runner by default; set `ROUTER_UPLOAD=1` or `HERMES_UPLOAD=1` only when local checkouts must be shipped
+3. clones 9Router and Hermes WebUI on the runner from public repos; it does not upload those projects from the Mac
 4. runs `npm install` and installs `codexapp` plus `opencode-ai`
 5. starts Worker Agents in detached tmux on port `1456`
 6. starts one `*.lolgames.net` same-port tunnel for Worker Agents; child UIs reuse that hostname with their own ports
-7. saves the result under `./outputs/*-worker-agents.json`
+7. smoke-tests the public console and `/api/status`
+8. saves ignored local metadata under `./outputs/*-worker-agents.json` and `./outputs/latest-worker-agents.json`
+
+Default dependency repos:
+
+- 9Router: `https://github.com/decolua/9router.git`
+- Hermes WebUI: `https://github.com/nesquena/hermes-webui.git`
+
+Useful knobs:
+
+- `SYNC_AGENT_WORKSPACE=0` skips the public repo sync preflight.
+- `CANCEL_OLDER_WORKERS=0` keeps older in-progress `agent-workspace` workflow runs alive. The Worker Agents launcher defaults to canceling them; the Codex app launcher defaults to preserving them unless explicitly set.
+- `SMOKE_TEST=0` skips post-deploy HTTP smoke checks.
+- `SMOKE_REQUIRE_ROUTER=1` makes the derived 9Router public route mandatory instead of warning-only.
 
 ## Notes
 
 - If GitHub returns a transient `HTTP 500: Failed to run workflow dispatch`, retrying a few seconds later usually works; `scripts/ssh-runner-link.sh` retries dispatch up to 3 times.
 - `scripts/ssh-runner-link.sh` now tries to dedupe dispatch retries: if GitHub returns an error but a fresh run was actually created, the script reuses that run instead of dispatching another one.
 - The launchers auto-cancel the just-created GitHub Actions run on failure by default (`CANCEL_FAILED_RUN=1`) so partial setup errors do not leave a new orphan worker behind.
+- Fresh Worker Agents launches cancel older in-progress runs by default (`CANCEL_OLDER_WORKERS=1`) to avoid duplicate stale workers.
 - Worker Agents can supervise Codex Web Local, OpenCode, Hermes WebUI, and 9Router on the worker. A fresh Hermes WebUI clone may need the Hermes Agent bootstrap once before `--skip-agent-install` can run non-interactively.
 - The worker launcher now preconfigures the child UIs to use local 9Router by default: Codex Web Local gets a seeded custom-endpoint state, OpenCode starts with a stable listed router model (`openai/gpt-5.4-mini`) against `http://127.0.0.1:20127/v1`, and Hermes uses the generated `~/.hermes/config.yaml`.
 - Prefer reusing an already running worker for CLI smoke tests. The repo `tests/` helpers are meant to run fast over SSH against a live worker with short one-shot prompts, not by launching a fresh worker each time.
@@ -188,8 +202,7 @@ npm run check
 - A closed local port must not kill an all-ports hostname tunnel. The client should close only that failed connection and keep the control session alive for other ports.
 - The tunnel client reconnects its broker control session after resets. If a public URL starts timing out, inspect `~/worker-agents-lolgames.log`; restarting the detached client for the same name restores the same public hostname.
 - If the broker appears to "lose" registrations while worker client processes are still alive, check `lolgames-micro` for leaked public sockets: `ss -tan state close-wait '( sport = :10080 or sport ge :1024 )'`. The broker/client protocol has ping/pong keepalives and the public forwarding path must cancel the paired copy task as soon as either side closes; otherwise stale control sessions or `CLOSE-WAIT` public sockets can leave a hostname unregistered until the client is restarted.
-- The worker launchers clone `https://github.com/phaneron23/9router.git` on the GitHub runner by default instead of pushing the local checkout through tmate. Use `ROUTER_UPLOAD=1` only when you explicitly need to ship a local 9Router checkout; the archive excludes `.next`, `node_modules`, and other build artifacts.
+- The worker launchers clone `https://github.com/decolua/9router.git` and `https://github.com/nesquena/hermes-webui.git` on the GitHub runner. Do not upload local Mac checkouts for these dependencies.
 - On July 21, 2026, the preferred live pattern is one hostname: `http://<prefix>-worker-agents.lolgames.net:1456/` returns Worker Agents (`200`), and `http://<prefix>-worker-agents.lolgames.net:20127/v1/models` reaches 9Router (`401` without API key).
 - 9Router is a Next standalone build. After `npm run build`, copy `.next/static` to `.next/standalone/.next/static` and `public` to `.next/standalone/public`, then launch from inside `.next/standalone` with `node server.js`. If `/login` returns HTML but every `/_next/static/...` asset returns `404`, the page will look stuck on loading until this static-copy/working-directory fix is applied.
-- `refresh-worker-agents-worker.sh` provisions missing child-agent CLIs on the runner: `codexapp`, `opencode`, and Hermes WebUI. Hermes WebUI is cloned from `https://github.com/nesquena/hermes-webui.git` by default; use `HERMES_UPLOAD=1` only when a local Hermes checkout must be shipped.
-- `run-worker-agents-worker.sh` should follow the same Hermes rule as refresh: clone Hermes WebUI on the runner by default and only upload a local Hermes checkout when `HERMES_UPLOAD=1`. Uploading the whole local Hermes tree through tmate makes fresh-worker provisioning much less reliable.
+- `refresh-worker-agents-worker.sh` provisions missing child-agent CLIs on the runner: `codexapp`, `opencode`, and Hermes WebUI. It refreshes the local `workerAgents` app archive only; 9Router and Hermes WebUI are always cloned from their public repos on the runner.

@@ -3,9 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$ROOT_DIR/workerAgents"
-ROUTER_DIR="${ROUTER_DIR:-/Users/igor/Git-projects/9router}"
-ROUTER_GIT_URL="${ROUTER_GIT_URL:-https://github.com/phaneron23/9router.git}"
-HERMES_WEBUI_DIR="${HERMES_WEBUI_DIR:-/Users/igor/Git-projects/hermes-webui}"
+ROUTER_GIT_URL="${ROUTER_GIT_URL:-https://github.com/decolua/9router.git}"
 HERMES_WEBUI_GIT_URL="${HERMES_WEBUI_GIT_URL:-https://github.com/nesquena/hermes-webui.git}"
 APP_PORT="${APP_PORT:-1456}"
 TUNNEL_CLIENT_PATH="$ROOT_DIR/scripts/lolgames_tunnel.py"
@@ -51,34 +49,6 @@ tar \
   -czf "$ARCHIVE_PATH" \
   -C "$ROOT_DIR" \
   workerAgents
-
-ROUTER_ARCHIVE_PATH=""
-if [[ "${ROUTER_UPLOAD:-0}" == "1" && -d "$ROUTER_DIR" ]]; then
-  ROUTER_ARCHIVE_PATH="$TMP_DIR/9router.tgz"
-  tar \
-    --exclude='.git' \
-    --exclude='node_modules' \
-    --exclude='.next' \
-    --exclude='.turbo' \
-    --exclude='dist' \
-    --exclude='build' \
-    -czf "$ROUTER_ARCHIVE_PATH" \
-    -C "$(dirname "$ROUTER_DIR")" \
-    "$(basename "$ROUTER_DIR")"
-fi
-
-HERMES_ARCHIVE_PATH=""
-if [[ "${HERMES_UPLOAD:-0}" == "1" && -d "$HERMES_WEBUI_DIR" ]]; then
-  HERMES_ARCHIVE_PATH="$TMP_DIR/hermes-webui.tgz"
-  tar \
-    --exclude='.git' \
-    --exclude='node_modules' \
-    --exclude='.venv' \
-    --exclude='venv' \
-    -czf "$HERMES_ARCHIVE_PATH" \
-    -C "$(dirname "$HERMES_WEBUI_DIR")" \
-    "$(basename "$HERMES_WEBUI_DIR")"
-fi
 
 REMOTE_SCRIPT="$TMP_DIR/refresh-worker-agents-setup.sh"
 cat > "$REMOTE_SCRIPT" <<'EOF'
@@ -135,20 +105,9 @@ PY
 rm -rf "$APP_HOME"
 mkdir -p "$APP_HOME"
 tar -xzf /tmp/workerAgents.tgz -C "$HOME"
-if [[ -f /tmp/9router.tgz ]]; then
-  rm -rf "$ROUTER_HOME"
-  tar -xzf /tmp/9router.tgz -C "$HOME"
-elif [[ ! -f "$ROUTER_HOME/package.json" ]]; then
-  rm -rf "$ROUTER_HOME"
-  git clone --depth 1 "$ROUTER_GIT_URL" "$ROUTER_HOME"
-fi
-if [[ -f /tmp/hermes-webui.tgz ]]; then
-  rm -rf "$HERMES_WEBUI_HOME"
-  tar -xzf /tmp/hermes-webui.tgz -C "$HOME"
-elif [[ ! -f "$HERMES_WEBUI_HOME/bootstrap.py" ]]; then
-  rm -rf "$HERMES_WEBUI_HOME"
-  git clone --depth 1 "$HERMES_WEBUI_GIT_URL" "$HERMES_WEBUI_HOME"
-fi
+rm -rf "$ROUTER_HOME" "$HERMES_WEBUI_HOME"
+git clone --depth 1 "$ROUTER_GIT_URL" "$ROUTER_HOME"
+git clone --depth 1 "$HERMES_WEBUI_GIT_URL" "$HERMES_WEBUI_HOME"
 cd "$APP_HOME"
 npm install
 npm install -g codexapp opencode-ai
@@ -271,7 +230,7 @@ EOF
 
 RUN_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 REMOTE_OUTPUT="$TMP_DIR/remote-output.txt"
-python3 - "$SSH_TARGET" "$ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" "$ROUTER_ARCHIVE_PATH" "$HERMES_ARCHIVE_PATH" <<'PY'
+python3 - "$SSH_TARGET" "$ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" <<'PY'
 import base64
 import os
 import re
@@ -282,7 +241,7 @@ import subprocess
 import sys
 import time
 
-ssh_target, archive_path, tunnel_client_path, script_path, out_path, app_port, run_token, router_archive_path, hermes_archive_path = sys.argv[1:]
+ssh_target, archive_path, tunnel_client_path, script_path, out_path, app_port, run_token = sys.argv[1:]
 ssh_cmd = ssh_target if ssh_target.strip().startswith("ssh ") else f"ssh {shlex.quote(ssh_target)}"
 ssh_argv = shlex.split(ssh_cmd)
 ssh_argv = [ssh_argv[0], "-tt", *ssh_argv[1:]]
@@ -368,12 +327,9 @@ with open(out_path, "w", encoding="utf-8") as outf:
 
     for local_path, remote_b64, remote_out in [
         (archive_path, "/tmp/workerAgents.tgz.b64", "/tmp/workerAgents.tgz"),
-        (hermes_archive_path, "/tmp/hermes-webui.tgz.b64", "/tmp/hermes-webui.tgz"),
         (tunnel_client_path, "/tmp/lolgames_tunnel.py.b64", "/tmp/lolgames_tunnel.py"),
         (script_path, "/tmp/refresh-worker-agents-setup.sh.b64", "/tmp/refresh-worker-agents-setup.sh"),
     ]:
-        if not local_path:
-            continue
         encoded = base64.b64encode(open(local_path, "rb").read()).decode("ascii")
         lines = [f": > {remote_b64}"]
         for i in range(0, len(encoded), 900):
@@ -384,16 +340,7 @@ with open(out_path, "w", encoding="utf-8") as outf:
         proc.stdin.write("\n".join(lines) + "\n")
         proc.stdin.flush()
 
-    if router_archive_path:
-        encoded = base64.b64encode(open(router_archive_path, "rb").read()).decode("ascii")
-        lines = [": > /tmp/9router.tgz.b64"]
-        for i in range(0, len(encoded), 900):
-            lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> /tmp/9router.tgz.b64")
-        lines.append("base64 -d /tmp/9router.tgz.b64 > /tmp/9router.tgz")
-        proc.stdin.write("\n".join(lines) + "\n")
-        proc.stdin.flush()
-
-    proc.stdin.write(f"RUN_TOKEN={run_token} APP_PORT={app_port} ROUTER_GIT_URL={shlex.quote(os.environ.get('ROUTER_GIT_URL', 'https://github.com/phaneron23/9router.git'))} HERMES_WEBUI_GIT_URL={shlex.quote(os.environ.get('HERMES_WEBUI_GIT_URL', 'https://github.com/nesquena/hermes-webui.git'))} bash /tmp/refresh-worker-agents-setup.sh\n")
+    proc.stdin.write(f"RUN_TOKEN={run_token} APP_PORT={app_port} ROUTER_GIT_URL={shlex.quote(os.environ.get('ROUTER_GIT_URL', 'https://github.com/decolua/9router.git'))} HERMES_WEBUI_GIT_URL={shlex.quote(os.environ.get('HERMES_WEBUI_GIT_URL', 'https://github.com/nesquena/hermes-webui.git'))} bash /tmp/refresh-worker-agents-setup.sh\n")
     proc.stdin.flush()
 
     deadline = time.time() + 420

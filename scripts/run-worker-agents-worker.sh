@@ -5,12 +5,14 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO="${REPO:-alexcheng-dev/agent-workspace}"
 WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
 APP_DIR="$ROOT_DIR/workerAgents"
-ROUTER_DIR="${ROUTER_DIR:-/Users/igor/Git-projects/9router}"
-ROUTER_GIT_URL="${ROUTER_GIT_URL:-https://github.com/phaneron23/9router.git}"
-HERMES_WEBUI_DIR="${HERMES_WEBUI_DIR:-/Users/igor/Git-projects/hermes-webui}"
+ROUTER_GIT_URL="${ROUTER_GIT_URL:-https://github.com/decolua/9router.git}"
 HERMES_WEBUI_GIT_URL="${HERMES_WEBUI_GIT_URL:-https://github.com/nesquena/hermes-webui.git}"
 TUNNEL_CLIENT_PATH="$ROOT_DIR/scripts/lolgames_tunnel.py"
 APP_PORT="${APP_PORT:-1456}"
+SYNC_AGENT_WORKSPACE="${SYNC_AGENT_WORKSPACE:-1}"
+CANCEL_OLDER_WORKERS="${CANCEL_OLDER_WORKERS:-1}"
+SMOKE_TEST="${SMOKE_TEST:-1}"
+SMOKE_REQUIRE_ROUTER="${SMOKE_REQUIRE_ROUTER:-0}"
 TMP_DIR="$(mktemp -d)"
 RUN_ID=""
 LAUNCH_OK=0
@@ -52,19 +54,21 @@ if [[ ! -d "$APP_DIR" ]]; then
   exit 1
 fi
 
-if [[ "${ROUTER_UPLOAD:-0}" == "1" && ! -d "$ROUTER_DIR" ]]; then
-  echo "Missing 9router directory: $ROUTER_DIR" >&2
-  exit 1
-fi
-
-if [[ "${HERMES_UPLOAD:-0}" == "1" && ! -d "$HERMES_WEBUI_DIR" ]]; then
-  echo "Missing Hermes WebUI directory: $HERMES_WEBUI_DIR" >&2
-  exit 1
-fi
-
 if [[ ! -f "$TUNNEL_CLIENT_PATH" ]]; then
   echo "Missing lolgames tunnel client: $TUNNEL_CLIENT_PATH" >&2
   exit 1
+fi
+
+if [[ "$SYNC_AGENT_WORKSPACE" == "1" ]]; then
+  ./scripts/ensure-agent-workspace-repo.sh
+fi
+
+if [[ "$CANCEL_OLDER_WORKERS" == "1" ]]; then
+  while IFS= read -r old_run_id; do
+    [[ -n "$old_run_id" ]] || continue
+    echo "Canceling older in-progress worker run: $old_run_id" >&2
+    gh run cancel "$old_run_id" --repo "$REPO" >/dev/null 2>&1 || true
+  done < <(gh run list --repo "$REPO" --workflow "$WORKFLOW" --status in_progress --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true)
 fi
 
 echo "Triggering worker..."
@@ -86,34 +90,6 @@ tar \
   -czf "$ARCHIVE_PATH" \
   -C "$ROOT_DIR" \
   workerAgents
-
-ROUTER_ARCHIVE_PATH=""
-if [[ "${ROUTER_UPLOAD:-0}" == "1" ]]; then
-  ROUTER_ARCHIVE_PATH="$TMP_DIR/9router.tgz"
-  tar \
-    --exclude='.git' \
-    --exclude='node_modules' \
-    --exclude='.next' \
-    --exclude='.turbo' \
-    --exclude='dist' \
-    --exclude='build' \
-    -czf "$ROUTER_ARCHIVE_PATH" \
-    -C "$(dirname "$ROUTER_DIR")" \
-    "$(basename "$ROUTER_DIR")"
-fi
-
-HERMES_ARCHIVE_PATH=""
-if [[ "${HERMES_UPLOAD:-0}" == "1" ]]; then
-  HERMES_ARCHIVE_PATH="$TMP_DIR/hermes-webui.tgz"
-  tar \
-    --exclude='.git' \
-    --exclude='node_modules' \
-    --exclude='.venv' \
-    --exclude='venv' \
-    -czf "$HERMES_ARCHIVE_PATH" \
-    -C "$(dirname "$HERMES_WEBUI_DIR")" \
-    "$(basename "$HERMES_WEBUI_DIR")"
-fi
 
 REMOTE_SCRIPT="$TMP_DIR/remote-worker-agents-setup.sh"
 cat > "$REMOTE_SCRIPT" <<'EOF'
@@ -186,20 +162,9 @@ start_tunnel() {
 rm -rf "$APP_HOME"
 mkdir -p "$APP_HOME"
 tar -xzf /tmp/workerAgents.tgz -C "$HOME"
-if [[ -f /tmp/9router.tgz ]]; then
-  rm -rf "$ROUTER_HOME"
-  tar -xzf /tmp/9router.tgz -C "$HOME"
-elif [[ ! -f "$ROUTER_HOME/package.json" ]]; then
-  rm -rf "$ROUTER_HOME"
-  git clone --depth 1 "$ROUTER_GIT_URL" "$ROUTER_HOME"
-fi
-if [[ -f /tmp/hermes-webui.tgz ]]; then
-  rm -rf "$HERMES_WEBUI_HOME"
-  tar -xzf /tmp/hermes-webui.tgz -C "$HOME"
-elif [[ ! -f "$HERMES_WEBUI_HOME/bootstrap.py" ]]; then
-  rm -rf "$HERMES_WEBUI_HOME"
-  git clone --depth 1 "$HERMES_WEBUI_GIT_URL" "$HERMES_WEBUI_HOME"
-fi
+rm -rf "$ROUTER_HOME" "$HERMES_WEBUI_HOME"
+git clone --depth 1 "$ROUTER_GIT_URL" "$ROUTER_HOME"
+git clone --depth 1 "$HERMES_WEBUI_GIT_URL" "$HERMES_WEBUI_HOME"
 
 cd "$APP_HOME"
 npm install
@@ -262,7 +227,7 @@ EOF
 
 RUN_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 REMOTE_OUTPUT="$TMP_DIR/remote-output.txt"
-python3 - "$SSH_CMD" "$ARCHIVE_PATH" "$ROUTER_ARCHIVE_PATH" "$HERMES_ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" <<'PY'
+python3 - "$SSH_CMD" "$ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" <<'PY'
 import base64
 import os
 import re
@@ -273,7 +238,7 @@ import subprocess
 import sys
 import time
 
-ssh_cmd, archive_path, router_archive_path, hermes_archive_path, tunnel_client_path, script_path, out_path, app_port, run_token = sys.argv[1:]
+ssh_cmd, archive_path, tunnel_client_path, script_path, out_path, app_port, run_token = sys.argv[1:]
 ssh_argv = shlex.split(ssh_cmd)
 if not ssh_argv or ssh_argv[0] != "ssh":
     raise SystemExit(f"Unsupported SSH command: {ssh_cmd}")
@@ -368,32 +333,14 @@ with open(out_path, "w", encoding="utf-8") as outf:
         for i in range(0, len(encoded), 900):
             lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> {remote_b64}")
         lines.append(f"base64 -d {remote_b64} > {remote_out}")
-    if remote_out.endswith(".sh"):
-        lines.append(f"chmod +x {remote_out}")
-    proc.stdin.write("\n".join(lines) + "\n")
-    proc.stdin.flush()
-
-    if router_archive_path:
-        encoded = base64.b64encode(open(router_archive_path, "rb").read()).decode("ascii")
-        lines = [": > /tmp/9router.tgz.b64"]
-        for i in range(0, len(encoded), 900):
-            lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> /tmp/9router.tgz.b64")
-        lines.append("base64 -d /tmp/9router.tgz.b64 > /tmp/9router.tgz")
-        proc.stdin.write("\n".join(lines) + "\n")
-        proc.stdin.flush()
-
-    if hermes_archive_path:
-        encoded = base64.b64encode(open(hermes_archive_path, "rb").read()).decode("ascii")
-        lines = [": > /tmp/hermes-webui.tgz.b64"]
-        for i in range(0, len(encoded), 900):
-            lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> /tmp/hermes-webui.tgz.b64")
-        lines.append("base64 -d /tmp/hermes-webui.tgz.b64 > /tmp/hermes-webui.tgz")
+        if remote_out.endswith(".sh"):
+            lines.append(f"chmod +x {remote_out}")
         proc.stdin.write("\n".join(lines) + "\n")
         proc.stdin.flush()
 
     proc.stdin.write(
         f"RUN_TOKEN={run_token} APP_PORT={app_port} "
-        f"ROUTER_GIT_URL={shlex.quote(os.environ.get('ROUTER_GIT_URL', 'https://github.com/phaneron23/9router.git'))} "
+        f"ROUTER_GIT_URL={shlex.quote(os.environ.get('ROUTER_GIT_URL', 'https://github.com/decolua/9router.git'))} "
         f"HERMES_WEBUI_GIT_URL={shlex.quote(os.environ.get('HERMES_WEBUI_GIT_URL', 'https://github.com/nesquena/hermes-webui.git'))} "
         "bash /tmp/worker-agents-setup.sh\n"
     )
@@ -471,28 +418,62 @@ echo
 echo "workerAgents public URL:"
 echo "${PUBLIC_URL:-<missing>}"
 
-TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-agents.json" "$SSH_CMD" "${PUBLIC_URL:-}" <<'PY'
-import json
-import sys
-from datetime import datetime, timezone
-
-out_path, ssh_cmd, public_url = sys.argv[1:]
-payload = {
-    "created_at": datetime.now(timezone.utc).isoformat(),
-    "ssh": ssh_cmd,
-    "worker_agents_url": public_url,
-}
-with open(out_path, "w", encoding="utf-8") as f:
-    json.dump(payload, f, indent=2)
-    f.write("\n")
-PY
-
 if [[ -z "${PUBLIC_URL:-}" ]]; then
   echo
   echo "Warning: workerAgents lolgames URL not found yet. Re-check on the worker:" >&2
   echo "  tail -60 ~/worker-agents-lolgames.log" >&2
   exit 1
 fi
+
+if [[ "$SMOKE_TEST" == "1" ]]; then
+  echo
+  echo "Smoke testing workerAgents..."
+  curl -fsS --max-time 20 "$PUBLIC_URL/" >/dev/null
+  curl -fsS --max-time 20 "$PUBLIC_URL/api/status" >/dev/null
+  ROUTER_URL="$(python3 - "$PUBLIC_URL" <<'PY'
+from urllib.parse import urlsplit, urlunsplit
+import sys
+u = urlsplit(sys.argv[1])
+print(urlunsplit((u.scheme, f"{u.hostname}:20127", "/api/health", "", "")))
+PY
+)"
+  if curl -fsS --max-time 20 "$ROUTER_URL" >/dev/null; then
+    echo "9Router route OK: $ROUTER_URL"
+  elif [[ "$SMOKE_REQUIRE_ROUTER" == "1" ]]; then
+    echo "9Router smoke test failed: $ROUTER_URL" >&2
+    exit 1
+  else
+    echo "Warning: 9Router route did not pass smoke test yet: $ROUTER_URL" >&2
+  fi
+fi
+
+TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+METADATA_PATH="$ROOT_DIR/outputs/$TIMESTAMP-worker-agents.json"
+LATEST_METADATA_PATH="$ROOT_DIR/outputs/latest-worker-agents.json"
+python3 - "$METADATA_PATH" "$LATEST_METADATA_PATH" "$SSH_CMD" "${PUBLIC_URL:-}" "$REPO" "$WORKFLOW" "$RUN_ID" "$WEB_URL" "$ROUTER_GIT_URL" "$HERMES_WEBUI_GIT_URL" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+
+out_path, latest_path, ssh_cmd, public_url, repo, workflow, run_id, run_url, router_git_url, hermes_webui_git_url = sys.argv[1:]
+payload = {
+    "created_at": datetime.now(timezone.utc).isoformat(),
+    "repo": repo,
+    "workflow": workflow,
+    "run_id": run_id,
+    "run_url": run_url,
+    "ssh": ssh_cmd,
+    "worker_agents_url": public_url,
+    "router_git_url": router_git_url,
+    "hermes_webui_git_url": hermes_webui_git_url,
+}
+for path in (out_path, latest_path):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+PY
+echo "Wrote metadata:"
+echo "$METADATA_PATH"
+echo "$LATEST_METADATA_PATH"
 
 LAUNCH_OK=1

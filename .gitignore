@@ -2,3 +2,5 @@
 /outputs/*-worker-refresh.json
 
 /outputs/keys/
+/outputs/*-worker-agents.json
+/outputs/latest-worker-agents.json
