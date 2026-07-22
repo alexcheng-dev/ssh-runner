@@ -8,7 +8,7 @@ fi
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
   echo "Usage: $0 <owner/repo> <workflow-file-or-name> [branch]" >&2
-  echo "Example: $0 alexcheng-dev/ssh-runner ssh-runner.yml main" >&2
+  echo "Example: $0 alexcheng-dev/agent-workspace ssh-runner.yml main" >&2
   exit 1
 fi
 

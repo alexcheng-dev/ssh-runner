@@ -2,7 +2,7 @@
 
 ## GitHub Actions SSH runner
 
-This repo uses `/Users/igor/Documents/sshworker/.github/workflows/ssh-runner.yml` for short-lived SSH access to a GitHub Actions runner.
+This repo keeps the SSH runner workflow source at `/Users/igor/Documents/sshworker/.github/workflows/ssh-runner.yml`, but deploys workers from the public GitHub repo `alexcheng-dev/agent-workspace`.
 
 Reliable pattern:
 
@@ -23,7 +23,7 @@ Why this shape:
 Trigger and fetch a live SSH link:
 
 ```bash
-/Users/igor/Documents/sshworker/scripts/ssh-runner-link.sh alexcheng-dev/ssh-runner ssh-runner.yml
+/Users/igor/Documents/sshworker/scripts/ssh-runner-link.sh alexcheng-dev/agent-workspace ssh-runner.yml
 ```
 
 The output prints:
@@ -32,6 +32,14 @@ The output prints:
 - the matching GitHub Actions run URL
 
 Do not rely on tmate for this workflow. In practice tmate SSH returned `Internal error` and the tmate web URL returned `503` while the workflow still showed `in_progress`.
+
+Ensure the public runner repo exists and has the current workflow/tunnel client:
+
+```bash
+./scripts/ensure-agent-workspace-repo.sh
+```
+
+`ensure-agent-workspace-repo.sh` creates `alexcheng-dev/agent-workspace` as a public repo when missing, then syncs `.github/workflows/ssh-runner.yml` and `scripts/lolgames_tunnel.py` there. The worker launchers default to this repo; override with `REPO=owner/name` only when intentionally testing another Actions workspace.
 
 List all currently running worker instances and their live SSH links when the
 `ssh-link` artifact is already available:
@@ -64,9 +72,9 @@ Launch `workerAgents` on a fresh worker by uploading the local repo copy instead
 
 That script:
 
-1. starts a fresh SSH runner
+1. starts a fresh SSH runner from `alexcheng-dev/agent-workspace`
 2. uploads `/Users/igor/Documents/sshworker/workerAgents`
-3. uploads `/Users/igor/Git-projects/9router` and `/Users/igor/Git-projects/hermes-webui`
+3. clones 9Router and Hermes WebUI on the runner by default; set `ROUTER_UPLOAD=1` or `HERMES_UPLOAD=1` only when local checkouts must be shipped
 4. runs `npm install` and installs `codexapp` plus `opencode-ai`
 5. starts Worker Agents in detached tmux on port `1456`
 6. starts one `*.lolgames.net` same-port tunnel for Worker Agents; child UIs reuse that hostname with their own ports

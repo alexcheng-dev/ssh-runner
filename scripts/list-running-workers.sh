@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${REPO:-alexcheng-dev/ssh-runner}"
+REPO="${REPO:-alexcheng-dev/agent-workspace}"
 WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
 RUN_LIMIT="${RUN_LIMIT:-5}"
 TMP_DIR="$(mktemp -d)"

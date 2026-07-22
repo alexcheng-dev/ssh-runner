@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-REPO="${REPO:-alexcheng-dev/ssh-runner}"
+REPO="${REPO:-alexcheng-dev/agent-workspace}"
 WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
 TUNNEL_CLIENT_PATH="$ROOT_DIR/scripts/lolgames_tunnel.py"
 TMP_DIR="$(mktemp -d)"

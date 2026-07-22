@@ -11,6 +11,7 @@ Keep this file short. Put durable workflow details in `./wiki/*.md` and reusable
 ## Scripts
 
 - `/Users/igor/Documents/sshworker/scripts/ssh-runner-link.sh` — trigger the workflow, wait for the `ssh-link` artifact, and print the live SSH/Web links.
+- `/Users/igor/Documents/sshworker/scripts/ensure-agent-workspace-repo.sh` — create/sync the public `alexcheng-dev/agent-workspace` Actions repo used by the worker launchers.
 - `/Users/igor/Documents/sshworker/scripts/run-codexapp-worker.sh` — end-to-end local launcher: start the GitHub Actions worker, fetch SSH details, connect, start `codexapp` in detached tmux, expose it with the `*.lolgames.net` tunnel, and print the public URL and password.
 - `/Users/igor/Documents/sshworker/scripts/run-worker-agents-worker.sh` — upload `workerAgents` to a fresh worker, install/run it in tmux, expose it with the `*.lolgames.net` tunnel, and print the public URL.
 - `/Users/igor/Documents/sshworker/scripts/refresh-worker-agents-worker.sh` — refresh the current existing worker in place over SSH: upload current `workerAgents`, restart Worker Agents, refresh per-port tunnels/state, and print the updated URLs.

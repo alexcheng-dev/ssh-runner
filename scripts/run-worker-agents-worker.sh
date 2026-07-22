@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-REPO="${REPO:-alexcheng-dev/ssh-runner}"
+REPO="${REPO:-alexcheng-dev/agent-workspace}"
 WORKFLOW="${WORKFLOW:-ssh-runner.yml}"
 APP_DIR="$ROOT_DIR/workerAgents"
 ROUTER_DIR="${ROUTER_DIR:-/Users/igor/Git-projects/9router}"
@@ -391,7 +391,12 @@ with open(out_path, "w", encoding="utf-8") as outf:
         proc.stdin.write("\n".join(lines) + "\n")
         proc.stdin.flush()
 
-    proc.stdin.write(f"RUN_TOKEN={run_token} APP_PORT={app_port} ROUTER_GIT_URL={shlex.quote(os.environ.get('ROUTER_GIT_URL', 'https://github.com/phaneron23/9router.git'))} bash /tmp/worker-agents-setup.sh\n")
+    proc.stdin.write(
+        f"RUN_TOKEN={run_token} APP_PORT={app_port} "
+        f"ROUTER_GIT_URL={shlex.quote(os.environ.get('ROUTER_GIT_URL', 'https://github.com/phaneron23/9router.git'))} "
+        f"HERMES_WEBUI_GIT_URL={shlex.quote(os.environ.get('HERMES_WEBUI_GIT_URL', 'https://github.com/nesquena/hermes-webui.git'))} "
+        "bash /tmp/worker-agents-setup.sh\n"
+    )
     proc.stdin.flush()
 
     deadline = time.time() + 420
