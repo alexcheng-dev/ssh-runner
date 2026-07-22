@@ -261,12 +261,18 @@ function ensureOpenClawConfig() {
   existing.agents.defaults.models = { [routerQualifiedModel]: {} };
   existing.gateway ||= {};
   existing.gateway.mode ||= 'local';
+  existing.gateway.trustedProxies = Array.from(new Set([
+    ...(Array.isArray(existing.gateway.trustedProxies) ? existing.gateway.trustedProxies : []),
+    '127.0.0.1/32',
+    '::1/128'
+  ]));
   existing.gateway.auth ||= {
     mode: 'token',
     token: cryptoToken()
   };
   existing.gateway.controlUi ||= {};
   existing.gateway.controlUi.allowedOrigins ||= ['*'];
+  existing.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true;
   existing.update ||= {};
   existing.update.checkOnStart = false;
   writeJson(configPath, existing);
