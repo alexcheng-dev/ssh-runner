@@ -271,6 +271,18 @@ function ensureOpenClawConfig() {
   existing.update.checkOnStart = false;
   writeJson(configPath, existing);
 }
+
+async function ensureOpenClawBaseline() {
+  const workspaceDir = path.join(config.openClawHome, 'workspace');
+  const sessionsDir = path.join(config.openClawHome, 'agents', 'main', 'sessions');
+  if (fs.existsSync(path.join(config.openClawHome, 'openclaw.json')) && fs.existsSync(workspaceDir) && fs.existsSync(sessionsDir)) {
+    return false;
+  }
+  await runCommand(
+    `openclaw setup --baseline --non-interactive --accept-risk --skip-channels --skip-skills --skip-ui --skip-health --workspace ${JSON.stringify(workspaceDir)}`
+  );
+  return true;
+}
 function ensureOpenClawPatch() {
   const targetPath = openClawPatchPath();
   if (fs.existsSync(targetPath)) return;
@@ -473,13 +485,15 @@ const builtInDefinitions = [
     basePort: 18789,
     path: '/',
     command: (port) => applyPortTemplate(
-      commandFromEnv('AGENT_CMD_OPENCLAW', 'openclaw gateway run --port {port}'),
+      commandFromEnv('AGENT_CMD_OPENCLAW', 'openclaw gateway run --port {port} --allow-unconfigured'),
       port
     ),
     readyPatterns: [/listening on/i, /gateway is ready/i],
     beforeStart: async () => {
       await refreshTokenIfNeeded();
+      await ensureGlobalPackage('openclaw', 'openclaw');
       ensureOpenClawConfig();
+      await ensureOpenClawBaseline();
       ensureOpenClawPatch();
     },
     env: () => buildBaseEnv({
