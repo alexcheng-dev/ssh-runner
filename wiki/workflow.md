@@ -75,7 +75,7 @@ That script:
 1. starts a fresh SSH runner from `alexcheng-dev/agent-workspace`
 2. uploads `/Users/igor/Documents/sshworker/workerAgents`
 3. clones 9Router and Hermes WebUI on the runner by default; set `ROUTER_UPLOAD=1` or `HERMES_UPLOAD=1` only when local checkouts must be shipped
-4. runs `npm install` and installs `codexapp` plus `opencode-ai`
+4. runs `npm install` and installs `codexapp`, `opencode-ai`, and `openclaw`
 5. starts Worker Agents in detached tmux on port `1456`
 6. starts one `*.lolgames.net` same-port tunnel for Worker Agents; child UIs reuse that hostname with their own ports
 7. saves the result under `./outputs/*-worker-agents.json`
@@ -85,7 +85,7 @@ That script:
 - If GitHub returns a transient `HTTP 500: Failed to run workflow dispatch`, retrying a few seconds later usually works; `scripts/ssh-runner-link.sh` retries dispatch up to 3 times.
 - `scripts/ssh-runner-link.sh` now tries to dedupe dispatch retries: if GitHub returns an error but a fresh run was actually created, the script reuses that run instead of dispatching another one.
 - The launchers auto-cancel the just-created GitHub Actions run on failure by default (`CANCEL_FAILED_RUN=1`) so partial setup errors do not leave a new orphan worker behind.
-- Worker Agents can supervise Codex Web Local, OpenCode, Hermes WebUI, and 9Router on the worker. A fresh Hermes WebUI clone may need the Hermes Agent bootstrap once before `--skip-agent-install` can run non-interactively.
+- Worker Agents can supervise Codex Web Local, OpenCode, Hermes WebUI, OpenClaw Gateway, and 9Router on the worker. A fresh Hermes WebUI clone may need the Hermes Agent bootstrap once before `--skip-agent-install` can run non-interactively.
 - The worker launcher now preconfigures the child UIs to use local 9Router by default: Codex Web Local gets a seeded custom-endpoint state, OpenCode starts with a stable listed router model (`openai/gpt-5.4-mini`) against `http://127.0.0.1:20127/v1`, and Hermes uses the generated `~/.hermes/config.yaml`.
 - Prefer reusing an already running worker for CLI smoke tests. The repo `tests/` helpers are meant to run fast over SSH against a live worker with short one-shot prompts, not by launching a fresh worker each time.
 - Prefer refreshing the current worker in place over launching a fresh worker whenever possible. Use `scripts/refresh-worker-agents-worker.sh <ssh-destination>` for one-worker updates and only fall back to fresh provisioning when the existing worker is broken beyond quick repair.
@@ -191,5 +191,5 @@ npm run check
 - The worker launchers clone `https://github.com/phaneron23/9router.git` on the GitHub runner by default instead of pushing the local checkout through tmate. Use `ROUTER_UPLOAD=1` only when you explicitly need to ship a local 9Router checkout; the archive excludes `.next`, `node_modules`, and other build artifacts.
 - On July 21, 2026, the preferred live pattern is one hostname: `http://<prefix>-worker-agents.lolgames.net:1456/` returns Worker Agents (`200`), and `http://<prefix>-worker-agents.lolgames.net:20127/v1/models` reaches 9Router (`401` without API key).
 - 9Router is a Next standalone build. After `npm run build`, copy `.next/static` to `.next/standalone/.next/static` and `public` to `.next/standalone/public`, then launch from inside `.next/standalone` with `node server.js`. If `/login` returns HTML but every `/_next/static/...` asset returns `404`, the page will look stuck on loading until this static-copy/working-directory fix is applied.
-- `refresh-worker-agents-worker.sh` provisions missing child-agent CLIs on the runner: `codexapp`, `opencode`, and Hermes WebUI. Hermes WebUI is cloned from `https://github.com/nesquena/hermes-webui.git` by default; use `HERMES_UPLOAD=1` only when a local Hermes checkout must be shipped.
+- `refresh-worker-agents-worker.sh` provisions missing child-agent CLIs on the runner: `codexapp`, `opencode`, `openclaw`, and Hermes WebUI. Hermes WebUI is cloned from `https://github.com/nesquena/hermes-webui.git` by default; use `HERMES_UPLOAD=1` only when a local Hermes checkout must be shipped.
 - `run-worker-agents-worker.sh` should follow the same Hermes rule as refresh: clone Hermes WebUI on the runner by default and only upload a local Hermes checkout when `HERMES_UPLOAD=1`. Uploading the whole local Hermes tree through tmate makes fresh-worker provisioning much less reliable.

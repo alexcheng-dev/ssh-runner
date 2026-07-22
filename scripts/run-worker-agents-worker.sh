@@ -203,7 +203,7 @@ fi
 
 cd "$APP_HOME"
 npm install
-npm install -g codexapp opencode-ai
+npm install -g codexapp opencode-ai openclaw
 cd "$ROUTER_HOME"
 npm install
 if [[ ! -d .next ]]; then
@@ -224,7 +224,7 @@ for _ in $(seq 1 90); do
   sleep 2
 done
 
-for agent_id in codex-web-local opencode hermes-webui; do
+for agent_id in codex-web-local opencode hermes-webui openclaw; do
   curl -fsS -X POST "http://127.0.0.1:${APP_PORT:-1456}/api/agents/${agent_id}/restart" >/dev/null || true
   sleep 8
 done

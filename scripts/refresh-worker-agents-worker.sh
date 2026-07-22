@@ -151,7 +151,7 @@ elif [[ ! -f "$HERMES_WEBUI_HOME/bootstrap.py" ]]; then
 fi
 cd "$APP_HOME"
 npm install
-npm install -g codexapp opencode-ai
+npm install -g codexapp opencode-ai openclaw
 if [[ -f "$ROUTER_HOME/package.json" ]]; then
   cd "$ROUTER_HOME"
   npm install
@@ -174,7 +174,7 @@ for _ in $(seq 1 90); do
 done
 
 if [[ "${REFRESH_START_AGENTS:-1}" == "1" ]]; then
-  for agent_id in codex-web-local opencode hermes-webui; do
+  for agent_id in codex-web-local opencode hermes-webui openclaw; do
     curl -fsS -X POST "http://127.0.0.1:${APP_PORT:-1456}/api/agents/${agent_id}/restart" >/dev/null || true
     sleep 8
   done
@@ -223,15 +223,26 @@ for agent in data.get("agents", []):
         break
 PY
 )"
+OPENCLAW_PORT="$(python3 - "$STATUS_PATH" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+for agent in data.get("agents", []):
+    if agent.get("id") == "openclaw" and agent.get("state") == "running":
+        print(agent.get("port", ""))
+        break
+PY
+)"
 
 CODEX_URL=""
 OPENCODE_URL=""
 HERMES_URL=""
+OPENCLAW_URL=""
 if [[ -n "${CODEX_PORT:-}" ]]; then CODEX_URL="$(start_tunnel codex-web-local "$CODEX_PORT" || true)"; fi
 if [[ -n "${OPENCODE_PORT:-}" ]]; then OPENCODE_URL="$(start_tunnel opencode "$OPENCODE_PORT" || true)"; fi
 if [[ -n "${HERMES_PORT:-}" ]]; then HERMES_URL="$(start_tunnel hermes-webui "$HERMES_PORT" || true)"; fi
+if [[ -n "${OPENCLAW_PORT:-}" ]]; then OPENCLAW_URL="$(start_tunnel openclaw "$OPENCLAW_PORT" || true)"; fi
 
-python3 - "${WORKER_AGENTS_URL:-}" "${APP_PORT:-1456}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
+python3 - "${WORKER_AGENTS_URL:-}" "${APP_PORT:-1456}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" "${OPENCLAW_URL:-}" <<'PY'
 import json
 import os
 import sys
@@ -243,6 +254,7 @@ router_url = sys.argv[3]
 codex_url = sys.argv[4]
 opencode_url = sys.argv[5]
 hermes_url = sys.argv[6]
+openclaw_url = sys.argv[7]
 state = {
     "status": "running" if worker_agents_url else "starting",
     "url": worker_agents_url,
@@ -252,6 +264,7 @@ state = {
     "codex_web_url": codex_url,
     "opencode_url": opencode_url,
     "hermes_webui_url": hermes_url,
+    "openclaw_url": openclaw_url,
     "updated_at": datetime.now(timezone.utc).isoformat(),
 }
 state_dir = os.path.expanduser("~/.worker-agents")
@@ -267,6 +280,7 @@ echo "ROUTER_URL=${ROUTER_URL:-}"
 echo "CODEX_URL=${CODEX_URL:-}"
 echo "OPENCODE_URL=${OPENCODE_URL:-}"
 echo "HERMES_URL=${HERMES_URL:-}"
+echo "OPENCLAW_URL=${OPENCLAW_URL:-}"
 EOF
 
 RUN_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -430,6 +444,7 @@ ROUTER_URL="$(grep -aoE 'ROUTER_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+
 CODEX_URL="$(grep -aoE 'CODEX_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^CODEX_URL=//' | tail -n 1 || true)"
 OPENCODE_URL="$(grep -aoE 'OPENCODE_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^OPENCODE_URL=//' | tail -n 1 || true)"
 HERMES_URL="$(grep -aoE 'HERMES_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^HERMES_URL=//' | tail -n 1 || true)"
+OPENCLAW_URL="$(grep -aoE 'OPENCLAW_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^OPENCLAW_URL=//' | tail -n 1 || true)"
 
 if [[ -z "${PUBLIC_URL:-}" ]]; then
   STATE_FALLBACK="$TMP_DIR/remote-state-fallback.txt"
@@ -464,7 +479,8 @@ with open(sys.argv[2], 'w', encoding='utf-8') as f:
     for key, name in [
         ('worker_agents_url','PUBLIC_URL'), ('router_url','ROUTER_URL'),
         ('codex_web_url','CODEX_URL'), ('opencode_url','OPENCODE_URL'),
-        ('hermes_webui_url','HERMES_URL')]:
+        ('hermes_webui_url','HERMES_URL'),
+        ('openclaw_url','OPENCLAW_URL')]:
         val = str(data.get(key) or '')
         f.write(f'{name}={val}\n')
 PY
@@ -482,13 +498,15 @@ echo "opencode public URL:"
 echo "${OPENCODE_URL:-<missing>}"
 echo "hermes_webui public URL:"
 echo "${HERMES_URL:-<missing>}"
+echo "openclaw public URL:"
+echo "${OPENCLAW_URL:-<missing>}"
 
-python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-refresh.json" "$SSH_TARGET" "${PUBLIC_URL:-}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
+python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-refresh.json" "$SSH_TARGET" "${PUBLIC_URL:-}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" "${OPENCLAW_URL:-}" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
 
-out_path, ssh_dest, public_url, router_url, codex_url, opencode_url, hermes_url = sys.argv[1:]
+out_path, ssh_dest, public_url, router_url, codex_url, opencode_url, hermes_url, openclaw_url = sys.argv[1:]
 payload = {
     "created_at": datetime.now(timezone.utc).isoformat(),
     "ssh": ssh_dest,
@@ -497,6 +515,7 @@ payload = {
     "codex_web_url": codex_url,
     "opencode_url": opencode_url,
     "hermes_webui_url": hermes_url,
+    "openclaw_url": openclaw_url,
 }
 with open(out_path, "w", encoding="utf-8") as f:
     json.dump(payload, f, indent=2)
