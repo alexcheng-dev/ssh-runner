@@ -3,11 +3,18 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$ROOT_DIR/workerAgents"
-ROUTER_GIT_URL="${ROUTER_GIT_URL:-https://github.com/decolua/9router.git}"
+ROUTER_GIT_URL="${ROUTER_GIT_URL:-https://github.com/alexcheng-dev/9router.git}"
+ROUTER_PREBUILT_REPO="${ROUTER_PREBUILT_REPO:-alexcheng-dev/9router}"
+ROUTER_PREBUILT_WORKFLOW="${ROUTER_PREBUILT_WORKFLOW:-build-standalone.yml}"
 HERMES_WEBUI_GIT_URL="${HERMES_WEBUI_GIT_URL:-https://github.com/nesquena/hermes-webui.git}"
 APP_PORT="${APP_PORT:-1456}"
 TUNNEL_CLIENT_PATH="$ROOT_DIR/scripts/lolgames_tunnel.py"
 SSH_TARGET="${1:-}"
+REFRESH_START_AGENTS="${REFRESH_START_AGENTS:-0}"
+INSTALL_CHILD_DEPS="${INSTALL_CHILD_DEPS:-$REFRESH_START_AGENTS}"
+PROVISION_TRACE="${PROVISION_TRACE:-1}"
+SMOKE_TEST="${SMOKE_TEST:-1}"
+SMOKE_REQUIRE_ROUTER="${SMOKE_REQUIRE_ROUTER:-0}"
 TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
@@ -19,13 +26,18 @@ require() {
   }
 }
 
+trace() {
+  [[ "$PROVISION_TRACE" == "1" ]] || return 0
+  printf '[trace][%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2
+}
+
 require python3
 require tar
+require scp
+require ssh
 
 if [[ -z "$SSH_TARGET" ]]; then
   echo "Usage: $0 <ssh-destination-or-command>" >&2
-  echo "Example: $0 TcmpQmxBBMTWhy5KNJ5b3gMbM@sfo2.tmate.io" >&2
-  echo "Example: $0 'ssh -i ./outputs/keys/123_id_ed25519 -p 43123 runner@runner-123-ssh.lolgames.net'" >&2
   exit 1
 fi
 
@@ -42,16 +54,18 @@ fi
 mkdir -p "$ROOT_DIR/outputs"
 
 ARCHIVE_PATH="$TMP_DIR/workerAgents.tgz"
-tar \
-  --exclude='.git' \
-  --exclude='node_modules' \
-  --exclude='workers.json' \
-  -czf "$ARCHIVE_PATH" \
-  -C "$ROOT_DIR" \
-  workerAgents
+trace "pack workerAgents archive"
+tar --exclude='.git' --exclude='node_modules' --exclude='workers.json' -czf "$ARCHIVE_PATH" -C "$ROOT_DIR" workerAgents
+
+ROUTER_PREBUILT_PATH="$TMP_DIR/9router-standalone.tgz"
+trace "fetch 9router prebuilt"
+if ! REPO="$ROUTER_PREBUILT_REPO" WORKFLOW="$ROUTER_PREBUILT_WORKFLOW" ./scripts/fetch-9router-prebuilt.sh "$ROUTER_PREBUILT_PATH" >/dev/null 2>&1; then
+  echo "Warning: failed to fetch 9router prebuilt; falling back to clone+build." >&2
+  ROUTER_PREBUILT_PATH=""
+fi
 
 REMOTE_SCRIPT="$TMP_DIR/refresh-worker-agents-setup.sh"
-cat > "$REMOTE_SCRIPT" <<'EOF'
+cat > "$REMOTE_SCRIPT" <<'EOS'
 set -euo pipefail
 APP_HOME="$HOME/workerAgents"
 ROUTER_HOME="$HOME/9router"
@@ -76,55 +90,75 @@ done
 
 python3 - <<'PY'
 from pathlib import Path
-path = Path.home() / ".codex" / "config.toml"
-existing = path.read_text(encoding="utf-8") if path.exists() else ""
+path = Path.home() / '.codex' / 'config.toml'
+existing = path.read_text(encoding='utf-8') if path.exists() else ''
 lines = existing.splitlines()
-globals_ = []
-rest = []
-in_section = False
+globals_, rest, in_section = [], [], False
 for line in lines:
-    if line.lstrip().startswith("["):
+    if line.lstrip().startswith('['):
         in_section = True
-    if in_section:
-        rest.append(line)
-    else:
-        globals_.append(line)
+    (rest if in_section else globals_).append(line)
 def set_global_line(key, value):
     line = f'{key} = {value}'
     for i, current in enumerate(globals_):
-        if current.startswith(f"{key} = "):
+        if current.startswith(f'{key} = '):
             globals_[i] = line
             return
     globals_.append(line)
-set_global_line("model", '"openai/gpt-5.4-mini"')
-set_global_line("openai_base_url", '"http://127.0.0.1:20127/v1"')
-set_global_line("chatgpt_base_url", '"http://127.0.0.1:20127/backend-api"')
-path.write_text("\n".join([*globals_, *rest]).rstrip() + "\n", encoding="utf-8")
+set_global_line('model', '"openai/gpt-5.4-mini"')
+set_global_line('openai_base_url', '"http://127.0.0.1:20127/v1"')
+set_global_line('chatgpt_base_url', '"http://127.0.0.1:20127/backend-api"')
+path.write_text('\n'.join([*globals_, *rest]).rstrip() + '\n', encoding='utf-8')
 PY
+
+trace() {
+  [[ "${PROVISION_TRACE:-1}" == "1" ]] || return 0
+  printf '[remote-trace][%s] %s\n' "$(date -u +%H:%M:%S)" "$*"
+}
 
 rm -rf "$APP_HOME"
 mkdir -p "$APP_HOME"
+trace "extract workerAgents"
 tar -xzf /tmp/workerAgents.tgz -C "$HOME"
-rm -rf "$ROUTER_HOME" "$HERMES_WEBUI_HOME"
-git clone --depth 1 "$ROUTER_GIT_URL" "$ROUTER_HOME"
-git clone --depth 1 "$HERMES_WEBUI_GIT_URL" "$HERMES_WEBUI_HOME"
-cd "$APP_HOME"
-npm install
-npm install -g codexapp opencode-ai
-if [[ -f "$ROUTER_HOME/package.json" ]]; then
+
+if [[ -f /tmp/9router-standalone.tgz ]]; then
+  trace "extract 9router prebuilt"
+  rm -rf "$ROUTER_HOME"
+  mkdir -p "$ROUTER_HOME"
+  tar -xzf /tmp/9router-standalone.tgz -C "$ROUTER_HOME"
+else
+  trace "clone+build 9router fallback"
+  rm -rf "$ROUTER_HOME"
+  git clone --depth 1 "$ROUTER_GIT_URL" "$ROUTER_HOME"
   cd "$ROUTER_HOME"
   npm install
-  if [[ ! -d .next ]]; then
-    npm run build
-  fi
+  npm run build
+  mkdir -p .next/standalone/.next
+  rm -rf .next/standalone/.next/static .next/standalone/public
+  cp -R .next/static .next/standalone/.next/static
+  cp -R public .next/standalone/public
 fi
-if [[ -f "$HERMES_WEBUI_HOME/bootstrap.py" && ! -x "$HOME/.local/bin/hermes" ]]; then
+
+cd "$APP_HOME"
+trace "npm install workerAgents"
+npm install
+if [[ "${INSTALL_CHILD_DEPS:-0}" == "1" ]]; then
+  trace "clone Hermes WebUI"
+  rm -rf "$HERMES_WEBUI_HOME"
+  git clone --depth 1 "$HERMES_WEBUI_GIT_URL" "$HERMES_WEBUI_HOME"
+  trace "install child CLIs"
+  npm install -g codexapp opencode-ai
+fi
+if [[ "${INSTALL_CHILD_DEPS:-0}" == "1" && "${REFRESH_START_AGENTS:-0}" == "1" && ! -x "$HOME/.local/bin/hermes" ]]; then
+  trace "bootstrap Hermes"
   timeout 180 python3 "$HERMES_WEBUI_HOME/bootstrap.py" --no-browser --foreground --host 127.0.0.1 18935 >/tmp/hermes-bootstrap.log 2>&1 || true
 fi
 
+trace "start Worker Agents tmux"
 TMUX='' tmux -L workeragents -f /dev/null kill-server 2>/dev/null || true
-TMUX='' tmux -L workeragents -f /dev/null new-session -d -s workeragents "cd \"$APP_HOME\" && PORT=${APP_PORT:-1456} AGENT_CONSOLE_HOST=127.0.0.1 WORKER_AGENTS_9ROUTER_DIR=\"$HOME/9router\" WORKER_AGENTS_9ROUTER_PORT=20127 WORKER_AGENTS_9ROUTER_API_KEY=local-dev-key WORKER_AGENTS_9ROUTER_MODEL=openai/gpt-5.4-mini HERMES_WEBUI_DIR=\"$HOME/hermes-webui\" npm start > ~/worker-agents.log 2>&1"
+TMUX='' tmux -L workeragents -f /dev/null new-session -d -s workeragents "cd \"$APP_HOME\" && PORT=${APP_PORT:-1456} AGENT_CONSOLE_HOST=127.0.0.1 WORKER_AGENTS_9ROUTER_DIR=\"$ROUTER_HOME\" WORKER_AGENTS_9ROUTER_PORT=20127 WORKER_AGENTS_9ROUTER_API_KEY=local-dev-key WORKER_AGENTS_9ROUTER_MODEL=openai/gpt-5.4-mini HERMES_WEBUI_DIR=\"$HERMES_WEBUI_HOME\" npm start > ~/worker-agents.log 2>&1"
 
+trace "wait for Worker Agents API"
 for _ in $(seq 1 90); do
   if curl -fsS "http://127.0.0.1:${APP_PORT:-1456}/api/status" >/dev/null 2>&1; then
     break
@@ -132,7 +166,8 @@ for _ in $(seq 1 90); do
   sleep 2
 done
 
-if [[ "${REFRESH_START_AGENTS:-1}" == "1" ]]; then
+if [[ "${REFRESH_START_AGENTS:-0}" == "1" ]]; then
+  trace "start child agents"
   for agent_id in codex-web-local opencode hermes-webui; do
     curl -fsS -X POST "http://127.0.0.1:${APP_PORT:-1456}/api/agents/${agent_id}/restart" >/dev/null || true
     sleep 8
@@ -140,7 +175,6 @@ if [[ "${REFRESH_START_AGENTS:-1}" == "1" ]]; then
 fi
 
 TUNNEL_PREFIX="${LOLGAMES_TUNNEL_PREFIX:-$(hostname | tr '[:upper:]_' '[:lower:]-' | tr -cd 'a-z0-9-')-$(date +%s)}"
-
 start_tunnel() {
   local name="$1"
   local port="$2"
@@ -152,36 +186,19 @@ start_tunnel() {
 }
 
 STATUS_PATH="$STATE_DIR/status.json"
+trace "capture status + start tunnels"
 curl -fsS "http://127.0.0.1:${APP_PORT:-1456}/api/status" > "$STATUS_PATH"
 WORKER_AGENTS_URL="$(start_tunnel worker-agents "${APP_PORT:-1456}" || true)"
 ROUTER_URL="$(start_tunnel 9router 20127 || true)"
-CODEX_PORT="$(python3 - "$STATUS_PATH" <<'PY'
+
+python3 - "$STATUS_PATH" <<'PY' > "$STATE_DIR/ports.env"
 import json, sys
-data = json.load(open(sys.argv[1]))
-for agent in data.get("agents", []):
-    if agent.get("id") == "codex-web-local" and agent.get("state") == "running":
-        print(agent.get("port", ""))
-        break
+agents = {a.get('id'): a for a in json.load(open(sys.argv[1])).get('agents', [])}
+for key, env in [('codex-web-local', 'CODEX_PORT'), ('opencode', 'OPENCODE_PORT'), ('hermes-webui', 'HERMES_PORT')]:
+    agent = agents.get(key) or {}
+    print(f"{env}={agent.get('port') if agent.get('state') == 'running' else ''}")
 PY
-)"
-OPENCODE_PORT="$(python3 - "$STATUS_PATH" <<'PY'
-import json, sys
-data = json.load(open(sys.argv[1]))
-for agent in data.get("agents", []):
-    if agent.get("id") == "opencode" and agent.get("state") == "running":
-        print(agent.get("port", ""))
-        break
-PY
-)"
-HERMES_PORT="$(python3 - "$STATUS_PATH" <<'PY'
-import json, sys
-data = json.load(open(sys.argv[1]))
-for agent in data.get("agents", []):
-    if agent.get("id") == "hermes-webui" and agent.get("state") == "running":
-        print(agent.get("port", ""))
-        break
-PY
-)"
+source "$STATE_DIR/ports.env"
 
 CODEX_URL=""
 OPENCODE_URL=""
@@ -191,33 +208,25 @@ if [[ -n "${OPENCODE_PORT:-}" ]]; then OPENCODE_URL="$(start_tunnel opencode "$O
 if [[ -n "${HERMES_PORT:-}" ]]; then HERMES_URL="$(start_tunnel hermes-webui "$HERMES_PORT" || true)"; fi
 
 python3 - "${WORKER_AGENTS_URL:-}" "${APP_PORT:-1456}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
-import json
-import os
-import sys
+import json, os, sys
 from datetime import datetime, timezone
-
-worker_agents_url = sys.argv[1]
-port = int(sys.argv[2])
-router_url = sys.argv[3]
-codex_url = sys.argv[4]
-opencode_url = sys.argv[5]
-hermes_url = sys.argv[6]
+worker_agents_url, port, router_url, codex_url, opencode_url, hermes_url = sys.argv[1:]
 state = {
-    "status": "running" if worker_agents_url else "starting",
-    "url": worker_agents_url,
-    "worker_agents_url": worker_agents_url,
-    "port": port,
-    "router_url": router_url,
-    "codex_web_url": codex_url,
-    "opencode_url": opencode_url,
-    "hermes_webui_url": hermes_url,
-    "updated_at": datetime.now(timezone.utc).isoformat(),
+    'status': 'running' if worker_agents_url else 'starting',
+    'url': worker_agents_url,
+    'worker_agents_url': worker_agents_url,
+    'port': int(port),
+    'router_url': router_url,
+    'codex_web_url': codex_url,
+    'opencode_url': opencode_url,
+    'hermes_webui_url': hermes_url,
+    'updated_at': datetime.now(timezone.utc).isoformat(),
 }
-state_dir = os.path.expanduser("~/.worker-agents")
+state_dir = os.path.expanduser('~/.worker-agents')
 os.makedirs(state_dir, exist_ok=True)
-with open(os.path.join(state_dir, "state.json"), "w", encoding="utf-8") as f:
+with open(os.path.join(state_dir, 'state.json'), 'w', encoding='utf-8') as f:
     json.dump(state, f)
-    f.write("\n")
+    f.write('\n')
 PY
 
 echo "__WORKER_AGENTS_DONE__${RUN_TOKEN:-}"
@@ -226,149 +235,69 @@ echo "ROUTER_URL=${ROUTER_URL:-}"
 echo "CODEX_URL=${CODEX_URL:-}"
 echo "OPENCODE_URL=${OPENCODE_URL:-}"
 echo "HERMES_URL=${HERMES_URL:-}"
-EOF
+EOS
 
-RUN_TOKEN="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 REMOTE_OUTPUT="$TMP_DIR/remote-output.txt"
-python3 - "$SSH_TARGET" "$ARCHIVE_PATH" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$RUN_TOKEN" <<'PY'
-import base64
-import os
-import re
-import shlex
-import select
-import signal
-import subprocess
-import sys
-import time
-
-ssh_target, archive_path, tunnel_client_path, script_path, out_path, app_port, run_token = sys.argv[1:]
-ssh_cmd = ssh_target if ssh_target.strip().startswith("ssh ") else f"ssh {shlex.quote(ssh_target)}"
+trace "upload assets + run remote refresh"
+python3 - "$SSH_TARGET" "$ARCHIVE_PATH" "${ROUTER_PREBUILT_PATH:-}" "$TUNNEL_CLIENT_PATH" "$REMOTE_SCRIPT" "$REMOTE_OUTPUT" "$APP_PORT" "$ROUTER_GIT_URL" "$HERMES_WEBUI_GIT_URL" "$REFRESH_START_AGENTS" "$INSTALL_CHILD_DEPS" "$PROVISION_TRACE" <<'PY'
+import os, shlex, subprocess, sys
+ssh_target, archive_path, router_prebuilt_path, tunnel_client_path, script_path, out_path, app_port, router_git_url, hermes_webui_git_url, refresh_start_agents, install_child_deps, provision_trace = sys.argv[1:]
+ssh_cmd = ssh_target if ssh_target.strip().startswith('ssh ') else f'ssh {shlex.quote(ssh_target)}'
 ssh_argv = shlex.split(ssh_cmd)
-ssh_argv = [ssh_argv[0], "-tt", *ssh_argv[1:]]
-proc = subprocess.Popen(
-    ssh_argv,
-    stdin=subprocess.PIPE,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT,
-    text=True,
-    bufsize=1,
-)
-
-def close_proc(interrupt_remote=False):
-    if interrupt_remote:
-        try:
-            proc.stdin.write("\x03\n")
-            proc.stdin.flush()
-            time.sleep(0.2)
-        except Exception:
-            pass
-    proc.kill()
-    try:
-        proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        pass
-
-def on_interrupt(_signum, _frame):
-    close_proc(interrupt_remote=True)
-    raise SystemExit(130)
-
-signal.signal(signal.SIGINT, on_interrupt)
-signal.signal(signal.SIGTERM, on_interrupt)
-
-def read_chunk(timeout=0.2):
-    fd = proc.stdout.fileno()
-    ready, _, _ = select.select([fd], [], [], timeout)
-    if not ready:
-        return ""
-    data = os.read(fd, 4096)
-    return data.decode("utf-8", errors="ignore") if data else ""
-
-prompt_re = re.compile(r"runner@[^:]+:.*\$ ")
-continuation_re = re.compile(r"(?:^|\n|\r)> ?(?:\x1b\[[0-9;?]*[ -/]*[@-~])*")
-last_ctrl_c = 0.0
-buffer = ""
-started = False
-with open(out_path, "w", encoding="utf-8") as outf:
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        ch = read_chunk()
-        if not ch:
-            if proc.poll() is not None:
-                break
-            continue
-        buffer += ch
-        outf.write(ch)
-        outf.flush()
-        if not started and "Press <q> or <ctrl-c> to continue" in buffer:
-          proc.stdin.write("q")
-          proc.stdin.flush()
-        if continuation_re.search(buffer) and not prompt_re.search(buffer):
-          now = time.time()
-          if now - last_ctrl_c > 1.0:
-            proc.stdin.write("\x03\n")
-            proc.stdin.flush()
-            last_ctrl_c = now
-        if prompt_re.search(buffer):
-            started = True
-            break
-    if not started:
-        try:
-            proc.stdin.write("\x03\n")
-            proc.stdin.flush()
-        except Exception:
-            pass
-        raise SystemExit("Failed to reach remote shell prompt")
-
-    # Clear any quote/heredoc continuation prompt left by a previous interrupted
-    # tmate automation before sending upload/run commands.
-    proc.stdin.write("\x03\n")
-    proc.stdin.flush()
-    time.sleep(0.2)
-
-    for local_path, remote_b64, remote_out in [
-        (archive_path, "/tmp/workerAgents.tgz.b64", "/tmp/workerAgents.tgz"),
-        (tunnel_client_path, "/tmp/lolgames_tunnel.py.b64", "/tmp/lolgames_tunnel.py"),
-        (script_path, "/tmp/refresh-worker-agents-setup.sh.b64", "/tmp/refresh-worker-agents-setup.sh"),
-    ]:
-        encoded = base64.b64encode(open(local_path, "rb").read()).decode("ascii")
-        lines = [f": > {remote_b64}"]
-        for i in range(0, len(encoded), 900):
-            lines.append(f"printf %s {shlex.quote(encoded[i:i+900])} >> {remote_b64}")
-        lines.append(f"base64 -d {remote_b64} > {remote_out}")
-        if remote_out.endswith(".sh"):
-            lines.append(f"chmod +x {remote_out}")
-        proc.stdin.write("\n".join(lines) + "\n")
-        proc.stdin.flush()
-
-    proc.stdin.write(f"RUN_TOKEN={run_token} APP_PORT={app_port} ROUTER_GIT_URL={shlex.quote(os.environ.get('ROUTER_GIT_URL', 'https://github.com/decolua/9router.git'))} HERMES_WEBUI_GIT_URL={shlex.quote(os.environ.get('HERMES_WEBUI_GIT_URL', 'https://github.com/nesquena/hermes-webui.git'))} bash /tmp/refresh-worker-agents-setup.sh\n")
-    proc.stdin.flush()
-
-    deadline = time.time() + 420
-    while time.time() < deadline:
-        ch = read_chunk()
-        if not ch:
-            if proc.poll() is not None:
-                break
-            continue
-        buffer += ch
-        outf.write(ch)
-        outf.flush()
-        if f"__WORKER_AGENTS_DONE__{run_token}" in buffer and ".lolgames.net" in buffer:
-            break
-
-    close_proc(interrupt_remote=True)
+opts = []
+dest = None
+i = 1
+while i < len(ssh_argv):
+    token = ssh_argv[i]
+    if token in ('-i', '-p', '-o'):
+        opts.extend([token, ssh_argv[i + 1]])
+        i += 2
+        continue
+    if token.startswith('-'):
+        opts.append(token)
+        i += 1
+        continue
+    dest = token
+    break
+if not dest:
+    raise SystemExit(f'Could not parse SSH destination from: {ssh_cmd}')
+scp_opts = []
+i = 0
+while i < len(opts):
+    token = opts[i]
+    if token == '-p':
+        scp_opts.extend(['-P', opts[i + 1]])
+        i += 2
+    elif token in ('-i', '-o'):
+        scp_opts.extend([token, opts[i + 1]])
+        i += 2
+    else:
+        scp_opts.append(token)
+        i += 1
+files = [archive_path, tunnel_client_path, script_path]
+if router_prebuilt_path:
+    files.append(router_prebuilt_path)
+subprocess.run(['scp', *scp_opts, *files, f'{dest}:/tmp/'], check=True)
+remote_env = ' '.join([
+    f'RUN_TOKEN=refresh',
+    f'APP_PORT={shlex.quote(app_port)}',
+    f'ROUTER_GIT_URL={shlex.quote(router_git_url)}',
+    f'HERMES_WEBUI_GIT_URL={shlex.quote(hermes_webui_git_url)}',
+    f'REFRESH_START_AGENTS={shlex.quote(refresh_start_agents)}',
+    f'INSTALL_CHILD_DEPS={shlex.quote(install_child_deps)}',
+    f'PROVISION_TRACE={shlex.quote(provision_trace)}',
+]) 
+proc = subprocess.run(['ssh', *opts, dest, f'{remote_env} bash /tmp/{os.path.basename(script_path)}'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+open(out_path, 'w', encoding='utf-8').write(proc.stdout or '')
 PY
 
 SANITIZED_OUTPUT="$TMP_DIR/remote-output.clean.txt"
 python3 - "$REMOTE_OUTPUT" "$SANITIZED_OUTPUT" <<'PY'
-import re
-import sys
-
+import re, sys
 src, dst = sys.argv[1:]
-text = open(src, "r", encoding="utf-8", errors="ignore").read()
-text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text)
-text = text.replace("\r", "")
-open(dst, "w", encoding="utf-8").write(text)
+text = open(src, 'r', encoding='utf-8', errors='ignore').read()
+text = re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]', '', text).replace('\r', '')
+open(dst, 'w', encoding='utf-8').write(text)
 PY
 
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -379,78 +308,45 @@ OPENCODE_URL="$(grep -aoE 'OPENCODE_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0
 HERMES_URL="$(grep -aoE 'HERMES_URL=http://[-a-zA-Z0-9.]+\.lolgames\.net(:[0-9]+)?' "$SANITIZED_OUTPUT" | sed 's/^HERMES_URL=//' | tail -n 1 || true)"
 
 if [[ -z "${PUBLIC_URL:-}" ]]; then
-  STATE_FALLBACK="$TMP_DIR/remote-state-fallback.txt"
-  python3 - "$ROOT_DIR" "$SSH_TARGET" "$STATE_FALLBACK" <<'PY' || true
-import pathlib
-import shlex
-import subprocess
-import sys
-
-root_dir = pathlib.Path(sys.argv[1])
-ssh_target = sys.argv[2]
-out_path = pathlib.Path(sys.argv[3])
-remote_cmd = "cat ~/.worker-agents/state.json 2>/dev/null || true"
-if "tmate.io" in ssh_target:
-    dest = ssh_target.removeprefix("ssh ").strip()
-    argv = [str(root_dir / "tests" / "lib" / "ssh_tmate_exec.py"), dest, remote_cmd, "--timeout", "30"]
-    timeout = 45
-else:
-    ssh_cmd = ssh_target if ssh_target.strip().startswith("ssh ") else f"ssh {shlex.quote(ssh_target)}"
-    argv = shlex.split(ssh_cmd) + [remote_cmd]
-    timeout = 20
-proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout, check=False)
-out_path.write_text(proc.stdout or "", encoding="utf-8")
-PY
-  python3 - "$STATE_FALLBACK" "$TMP_DIR/state.env" <<'PY'
-import json, re, sys
-text = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
-text = re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]', '', text).replace('\r', '')
-match = re.search(r'\{[^{}]*"worker_agents_url"[^{}]*\}', text, re.S)
-data = json.loads(match.group(0)) if match else {}
-with open(sys.argv[2], 'w', encoding='utf-8') as f:
-    for key, name in [
-        ('worker_agents_url','PUBLIC_URL'), ('router_url','ROUTER_URL'),
-        ('codex_web_url','CODEX_URL'), ('opencode_url','OPENCODE_URL'),
-        ('hermes_webui_url','HERMES_URL')]:
-        val = str(data.get(key) or '')
-        f.write(f'{name}={val}\n')
-PY
-  # shellcheck disable=SC1090
-  source "$TMP_DIR/state.env" 2>/dev/null || true
-fi
-
-echo "workerAgents public URL:"
-echo "${PUBLIC_URL:-<missing>}"
-echo "9router public URL:"
-echo "${ROUTER_URL:-<missing>}"
-echo "codex_web public URL:"
-echo "${CODEX_URL:-<missing>}"
-echo "opencode public URL:"
-echo "${OPENCODE_URL:-<missing>}"
-echo "hermes_webui public URL:"
-echo "${HERMES_URL:-<missing>}"
-
-python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-refresh.json" "$SSH_TARGET" "${PUBLIC_URL:-}" "${ROUTER_URL:-}" "${CODEX_URL:-}" "${OPENCODE_URL:-}" "${HERMES_URL:-}" <<'PY'
-import json
-import sys
-from datetime import datetime, timezone
-
-out_path, ssh_dest, public_url, router_url, codex_url, opencode_url, hermes_url = sys.argv[1:]
-payload = {
-    "created_at": datetime.now(timezone.utc).isoformat(),
-    "ssh": ssh_dest,
-    "worker_agents_url": public_url,
-    "router_url": router_url,
-    "codex_web_url": codex_url,
-    "opencode_url": opencode_url,
-    "hermes_webui_url": hermes_url,
-}
-with open(out_path, "w", encoding="utf-8") as f:
-    json.dump(payload, f, indent=2)
-    f.write("\n")
-PY
-
-if [[ -z "${PUBLIC_URL:-}" ]]; then
-  echo "Warning: workerAgents lolgames URL not found yet." >&2
+  echo "Refresh finished but public URL was missing." >&2
   exit 1
 fi
+
+if [[ "$SMOKE_TEST" == "1" ]]; then
+  trace "smoke test public endpoints"
+  curl -fsS --max-time 20 "$PUBLIC_URL/" >/dev/null
+  curl -fsS --max-time 20 "$PUBLIC_URL/api/status" >/dev/null
+  if [[ -n "$ROUTER_URL" ]]; then
+    if curl -fsS --max-time 20 "$ROUTER_URL/api/health" >/dev/null; then
+      :
+    elif [[ "$SMOKE_REQUIRE_ROUTER" == "1" ]]; then
+      echo "9Router smoke test failed: $ROUTER_URL/api/health" >&2
+      exit 1
+    fi
+  fi
+fi
+
+echo
+echo "workerAgents public URL:"
+echo "${PUBLIC_URL:-<missing>}"
+[[ -n "$ROUTER_URL" ]] && { echo; echo "9router public URL:"; echo "$ROUTER_URL"; }
+[[ -n "$CODEX_URL" ]] && { echo; echo "Codex Web public URL:"; echo "$CODEX_URL"; }
+[[ -n "$OPENCODE_URL" ]] && { echo; echo "OpenCode public URL:"; echo "$OPENCODE_URL"; }
+[[ -n "$HERMES_URL" ]] && { echo; echo "Hermes WebUI public URL:"; echo "$HERMES_URL"; }
+
+python3 - "$ROOT_DIR/outputs/$TIMESTAMP-worker-refresh.json" "$PUBLIC_URL" "$ROUTER_URL" "$CODEX_URL" "$OPENCODE_URL" "$HERMES_URL" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+out_path, worker_agents_url, router_url, codex_url, opencode_url, hermes_url = sys.argv[1:]
+payload = {
+    'created_at': datetime.now(timezone.utc).isoformat(),
+    'worker_agents_url': worker_agents_url,
+    'router_url': router_url,
+    'codex_web_url': codex_url,
+    'opencode_url': opencode_url,
+    'hermes_webui_url': hermes_url,
+}
+with open(out_path, 'w', encoding='utf-8') as f:
+    json.dump(payload, f, indent=2)
+    f.write('\n')
+PY

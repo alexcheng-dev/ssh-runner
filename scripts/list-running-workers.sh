@@ -122,17 +122,21 @@ while IFS= read -r RUN_ID; do
     gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" > "$ZIP_PATH"
     unzip -qo "$ZIP_PATH" -d "$OUT_DIR"
     SSH_CMD="$(sed -n '1p' "$OUT_DIR/ssh-link.txt" 2>/dev/null || true)"
-    if [[ -f "$OUT_DIR/id_ed25519" && "$SSH_CMD" == *"-i ./id_ed25519"* ]]; then
+    if [[ "$SSH_CMD" == *"-i ./id_ed25519"* ]]; then
       KEY_DIR="$ROOT_DIR/outputs/keys"
       mkdir -p "$KEY_DIR"
       KEY_PATH="$KEY_DIR/${RUN_ID}_id_ed25519"
-      cp "$OUT_DIR/id_ed25519" "$KEY_PATH"
-      chmod 600 "$KEY_PATH"
-      SSH_CMD="$(python3 - "$SSH_CMD" "$KEY_PATH" <<'PY'
+      if [[ -f "$OUT_DIR/id_ed25519" ]]; then
+        cp "$OUT_DIR/id_ed25519" "$KEY_PATH"
+        chmod 600 "$KEY_PATH"
+      fi
+      if [[ -f "$KEY_PATH" ]]; then
+        SSH_CMD="$(python3 - "$SSH_CMD" "$KEY_PATH" <<'PY'
 import sys
 print(sys.argv[1].replace("-i ./id_ed25519", f"-i {sys.argv[2]}"))
 PY
 )"
+      fi
     fi
     LOLGAMES_INFO="$(find_remote_lolgames "$SSH_CMD")"
   fi

@@ -17,6 +17,8 @@ WORKFLOW="$2"
 BRANCH="${3:-}"
 TMP_DIR="$(mktemp -d)"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+KEY_TMP_PATH="$TMP_DIR/id_ed25519"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
@@ -33,10 +35,12 @@ resolve_new_run_id() {
 }
 
 run_workflow() {
+  ssh-keygen -t ed25519 -f "$KEY_TMP_PATH" -N "" -q >/dev/null
+  SSH_PUBLIC_KEY="$(tr -d '\n' < "$KEY_TMP_PATH.pub")"
   if [[ -n "$BRANCH" ]]; then
-    gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$BRANCH" >/dev/null
+    gh workflow run "$WORKFLOW" --repo "$REPO" --ref "$BRANCH" -f ssh_public_key="$SSH_PUBLIC_KEY" >/dev/null
   else
-    gh workflow run "$WORKFLOW" --repo "$REPO" >/dev/null
+    gh workflow run "$WORKFLOW" --repo "$REPO" -f ssh_public_key="$SSH_PUBLIC_KEY" >/dev/null
   fi
 }
 
@@ -68,56 +72,31 @@ if [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]]; then
   exit 1
 fi
 
-for _ in {1..60}; do
-  CONCLUSION="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --jq '.jobs[0].steps[] | select(.name=="Upload SSH link as artifact") | .conclusion' 2>/dev/null || true)"
-  if [[ "$CONCLUSION" == "success" ]]; then
-    break
-  fi
+KEY_DIR="$ROOT_DIR/outputs/keys"
+mkdir -p "$KEY_DIR"
+KEY_PATH="$KEY_DIR/${RUN_ID}_id_ed25519"
+cp "$KEY_TMP_PATH" "$KEY_PATH"
+chmod 600 "$KEY_PATH"
 
-  RUN_STATE="$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '.status + "/" + (.conclusion // "")' 2>/dev/null || true)"
-  if [[ "$RUN_STATE" == completed/* ]]; then
-    echo "Run completed before ssh-link artifact became available: $RUN_STATE" >&2
-    exit 1
-  fi
-
-  sleep 2
-done
-
-ARTIFACT_ID="$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[] | select(.name=="ssh-link") | .id')"
-if [[ -z "$ARTIFACT_ID" || "$ARTIFACT_ID" == "null" ]]; then
-  echo "ssh-link artifact not found" >&2
-  exit 1
-fi
-
-gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" > "$TMP_DIR/artifact.zip"
-unzip -qo "$TMP_DIR/artifact.zip" -d "$TMP_DIR"
-
+HOST="runner-${RUN_ID}-1-ssh.lolgames.net"
+PORT="$((30000 + (RUN_ID % 20000)))"
+WEB_URL="https://github.com/${REPO}/actions/runs/${RUN_ID}"
 SSH_LINK_PATH="$TMP_DIR/ssh-link.txt"
-if [[ -f "$TMP_DIR/id_ed25519" ]]; then
-  ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-  KEY_DIR="$ROOT_DIR/outputs/keys"
-  mkdir -p "$KEY_DIR"
-  KEY_PATH="$KEY_DIR/${RUN_ID}_id_ed25519"
-  cp "$TMP_DIR/id_ed25519" "$KEY_PATH"
-  chmod 600 "$KEY_PATH"
-  python3 - "$SSH_LINK_PATH" "$KEY_PATH" <<'PY'
-import pathlib
-import sys
-
-link_path = pathlib.Path(sys.argv[1])
-key_path = pathlib.Path(sys.argv[2])
-lines = link_path.read_text(encoding="utf-8").splitlines()
-if lines:
-    lines[0] = lines[0].replace("-i ./id_ed25519", f"-i {key_path}")
-link_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-PY
-fi
+{
+  printf 'ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i %s -p %s runner@%s\n' "$KEY_PATH" "$PORT" "$HOST"
+  printf '%s\n' "$WEB_URL"
+  printf 'host=%s\n' "$HOST"
+  printf 'port=%s\n' "$PORT"
+} > "$SSH_LINK_PATH"
 
 if [[ -n "${SSH_RUNNER_META_OUT:-}" ]]; then
   {
     printf 'RUN_ID=%s\n' "$RUN_ID"
     printf 'REPO=%s\n' "$REPO"
     printf 'WORKFLOW=%s\n' "$WORKFLOW"
+    printf 'HOST=%s\n' "$HOST"
+    printf 'PORT=%s\n' "$PORT"
+    printf 'KEY_PATH=%s\n' "$KEY_PATH"
   } > "$SSH_RUNNER_META_OUT"
 fi
 
