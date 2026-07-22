@@ -175,6 +175,36 @@ function readOpenClawToken() {
   }
 }
 
+function readWorkerAgentsPublicUrl() {
+  try {
+    const statePath = path.join(os.homedir(), '.worker-agents', 'state.json');
+    const json = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    return String(json?.worker_agents_url || json?.url || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function deriveOpenClawAllowedOrigins(port) {
+  const origins = new Set();
+  const workerAgentsUrl = readWorkerAgentsPublicUrl();
+  if (workerAgentsUrl) {
+    try {
+      const parsed = new URL(workerAgentsUrl);
+      parsed.port = String(port);
+      parsed.pathname = '/';
+      parsed.search = '';
+      parsed.hash = '';
+      origins.add(parsed.origin);
+    } catch {
+      // ignore malformed persisted URL
+    }
+  }
+  origins.add(`http://127.0.0.1:${port}`);
+  origins.add(`http://localhost:${port}`);
+  return [...origins];
+}
+
 function writeJson(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
@@ -225,7 +255,7 @@ function ensureCodexWebUi9RouterConfig() {
   writeJson(statePath, state);
 }
 
-function ensureOpenClawConfig() {
+function ensureOpenClawConfig(port = 18789) {
   const configPath = path.join(config.openClawHome, 'openclaw.json');
   const existing = (() => {
     try {
@@ -266,12 +296,14 @@ function ensureOpenClawConfig() {
     '127.0.0.1/32',
     '::1/128'
   ]));
-  existing.gateway.auth ||= {
-    mode: 'token',
-    token: cryptoToken()
-  };
+  existing.gateway.auth ||= {};
+  existing.gateway.auth.mode ||= 'token';
+  existing.gateway.auth.token ||= cryptoToken();
   existing.gateway.controlUi ||= {};
-  existing.gateway.controlUi.allowedOrigins ||= ['*'];
+  existing.gateway.controlUi.allowedOrigins = Array.from(new Set([
+    ...(Array.isArray(existing.gateway.controlUi.allowedOrigins) ? existing.gateway.controlUi.allowedOrigins : []),
+    ...deriveOpenClawAllowedOrigins(port)
+  ]));
   existing.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true;
   existing.update ||= {};
   existing.update.checkOnStart = false;
@@ -428,7 +460,7 @@ const builtInDefinitions = [
       port
     ),
     readyPatterns: [/http:\/\/(localhost|127\.0\.0\.1):/i, /listening/i],
-    beforeStart: async () => {
+    beforeStart: async (_port) => {
       await refreshTokenIfNeeded();
       await ensureGlobalPackage('codexapp', 'codexapp');
       ensureCodexConfig();
@@ -450,7 +482,7 @@ const builtInDefinitions = [
       port
     ),
     readyPatterns: [/http:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0):/i, /listening/i],
-    beforeStart: async () => {
+    beforeStart: async (_port) => {
       await ensureGlobalPackage('opencode', 'opencode-ai');
     },
     env: () => buildBaseEnv({
@@ -472,7 +504,7 @@ const builtInDefinitions = [
       port
     ),
     readyPatterns: [/\/health/i, /HTTP server/i, /http:\/\/(127\.0\.0\.1|0\.0\.0\.0):/i],
-    beforeStart: async () => {
+    beforeStart: async (_port) => {
       await refreshTokenIfNeeded();
       await ensureHermesInstalled(18935);
       importCodexAuthForHermes();
@@ -495,10 +527,10 @@ const builtInDefinitions = [
       port
     ),
     readyPatterns: [/listening on/i, /gateway is ready/i],
-    beforeStart: async () => {
+    beforeStart: async (port) => {
       await refreshTokenIfNeeded();
       await ensureGlobalPackage('openclaw', 'openclaw');
-      ensureOpenClawConfig();
+      ensureOpenClawConfig(port);
       await ensureOpenClawBaseline();
       ensureOpenClawPatch();
     },
@@ -614,8 +646,8 @@ class AgentRuntime {
     this.notify({ type: 'state', agentId: this.definition.id });
 
     try {
-      await this.definition.beforeStart?.();
       this.port = await findAvailablePort(this.definition.basePort);
+      await this.definition.beforeStart?.(this.port);
       this.command = this.definition.command(this.port);
       this.log(`Starting: ${this.command}`);
       const child = spawn(this.command, {
