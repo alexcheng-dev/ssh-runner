@@ -4,7 +4,7 @@ Keep this file short. Put durable workflow details in `./wiki/*.md` and reusable
 
 - Always git commit completed repo changes unless the user explicitly says not to.
 - Worker launchers use public `alexcheng-dev/agent-workspace` for GitHub Actions. Keep `/Users/igor/Documents/sshworker/.github/workflows/ssh-runner.yml` as source and sync with `scripts/ensure-agent-workspace-repo.sh`.
-- Do not upload local Mac checkouts of 9Router or Hermes WebUI. Worker scripts should clone `https://github.com/decolua/9router.git` and `https://github.com/nesquena/hermes-webui.git` on the runner.
+- Do not upload local Mac checkouts of 9Router or Hermes WebUI. Worker scripts should use public repos on the runner; the default 9Router source/prebuilt is `https://github.com/alexcheng-dev/9router.git`, and Hermes WebUI is `https://github.com/nesquena/hermes-webui.git`.
 
 ## Wiki index
 
@@ -17,6 +17,7 @@ Keep this file short. Put durable workflow details in `./wiki/*.md` and reusable
 - `/Users/igor/Documents/sshworker/scripts/run-codexapp-worker.sh` — end-to-end local launcher: start the GitHub Actions worker, fetch SSH details, connect, start `codexapp` in detached tmux, expose it with the `*.lolgames.net` tunnel, and print the public URL and password.
 - `/Users/igor/Documents/sshworker/scripts/run-worker-agents-worker.sh` — sync `agent-workspace`, launch a fresh worker, upload `workerAgents`, clone 9Router/Hermes WebUI from public repos, smoke-test, expose via `*.lolgames.net`, and write ignored local metadata.
 - `/Users/igor/Documents/sshworker/scripts/refresh-worker-agents-worker.sh` — refresh the current existing worker in place over SSH: upload current `workerAgents`, clone 9Router/Hermes WebUI from public repos, restart Worker Agents, refresh tunnels/state, and print updated URLs.
+- `/Users/igor/Documents/sshworker/scripts/doctor-worker.sh` — canonical worker health/status check for SSH or public URL inputs; verify runner reachability, Worker Agents, 9Router, Hermes presence, tunnel health, and persisted state consistency.
 - `/Users/igor/Documents/sshworker/scripts/list-running-workers.sh` — list in-progress workflow runs and print their live SSH/Web links when the artifact is ready.
 - `/Users/igor/Documents/sshworker/scripts/inspect-worker.sh` — inspect one worker over interactive tmate SSH and print its persisted Codex worker state JSON.
 - `/Users/igor/Documents/sshworker/scripts/tunnel.sh` — publish a local port through `*.lolgames.net` via the Katie `lolgames-micro` broker.

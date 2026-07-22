@@ -9,14 +9,39 @@ Reliable pattern:
 1. Start `sshd` on the GitHub runner on local port `2222`.
 2. Start `scripts/lolgames_tunnel.py` in raw TCP mode with a unique public port.
 3. Save the `ssh -i ... -p <port> runner@<name>.lolgames.net` command into `/tmp/ssh-link.txt`.
-4. Upload `ssh-link.txt` and the generated temporary private key as the `ssh-link` artifact before the 6-hour sleep step.
+4. Upload `ssh-link.txt` as the `ssh-link` artifact before the 6-hour sleep step.
+5. Generate the SSH keypair locally in `scripts/ssh-runner-link.sh`, pass only the public key into the workflow, and keep the private key under `./outputs/keys/<run_id>_id_ed25519`.
 
 Why this shape:
 
 - Tmate can return `Internal error` / web `503` while the GitHub Actions job still appears `in_progress`; lolgames gives us our own SSH TCP path.
 - GitHub job logs were not a reliable way to retrieve the live SSH link while the job was still running.
-- The artifact is available immediately after the upload step completes, so it is the best retrieval surface.
+- The artifact is available immediately after the upload step completes, so it remains a useful retrieval surface for the human-readable SSH link.
 - SSH is raw TCP, so each runner SSH tunnel uses a unique public port; it cannot share one public port by hostname like HTTP traffic can.
+- The host and port are deterministic from `GITHUB_RUN_ID`: `runner-<run_id>-1-ssh.lolgames.net:<30000 + (run_id % 20000)>`.
+
+## Canonical workflow
+
+Default workflow:
+
+1. Prefer reusing an existing healthy worker and refresh it in place.
+2. Fall back to a fresh worker launch only when no healthy reusable worker exists or the existing one is broken beyond quick repair.
+
+Use these commands:
+
+```bash
+./scripts/list-running-workers.sh
+./scripts/doctor-worker.sh "<ssh-destination-or-worker-url>"
+./scripts/refresh-worker-agents-worker.sh "<ssh-destination>"
+```
+
+Fallback fresh launch:
+
+```bash
+./scripts/run-worker-agents-worker.sh
+```
+
+Treat interactive tmate as inspection/debug only. Automation should prefer direct SSH, persisted state files, public health endpoints, and one-shot CLI checks.
 
 ## Quick usage
 
@@ -31,7 +56,7 @@ The output prints:
 - the live `ssh -i /path/to/key -p <port> runner@<name>.lolgames.net` command
 - the matching GitHub Actions run URL
 
-Do not rely on tmate for this workflow. In practice tmate SSH returned `Internal error` and the tmate web URL returned `503` while the workflow still showed `in_progress`.
+Do not rely on tmate for automation in this workflow. In practice tmate SSH returned `Internal error` and the tmate web URL returned `503` while the workflow still showed `in_progress`.
 
 Ensure the public runner repo exists and has the current workflow/tunnel client:
 
@@ -62,9 +87,24 @@ Refresh the current existing worker in place instead of launching a new one:
 ./scripts/refresh-worker-agents-worker.sh <ssh-destination>
 ```
 
-This script targets exactly one worker: the SSH destination you pass in. Prefer it over reprovisioning when you only need to update the worker you are already using, because it is much faster than starting a fresh GitHub Actions runner.
+This script targets exactly one worker: the SSH destination you pass in. This is the preferred default path whenever you already have a live worker.
 
-Launch `workerAgents` on a fresh worker by uploading the local repo copy instead of starting Codex Web Local:
+Run one health/status pass before or after a refresh:
+
+```bash
+./scripts/doctor-worker.sh <ssh-destination-or-worker-url>
+```
+
+`doctor-worker.sh` verifies:
+
+- runner reachable when SSH is available
+- Worker Agents reachable locally/publicly
+- 9Router reachable locally/publicly
+- Hermes presence/registration
+- tunnel/public URL health
+- persisted state consistency
+
+Launch `workerAgents` on a fresh worker only when refresh/reuse is not viable:
 
 ```bash
 ./scripts/run-worker-agents-worker.sh
@@ -93,6 +133,39 @@ Useful knobs:
 - `SMOKE_TEST=0` skips post-deploy HTTP smoke checks.
 - `SMOKE_REQUIRE_ROUTER=1` makes the derived 9Router public route mandatory instead of warning-only.
 
+## Profiling
+
+Preferred profiling target: refresh/reuse first, fresh launch second.
+
+Refresh path:
+
+```bash
+PROVISION_TRACE=1 \
+/usr/bin/time -lp ./scripts/refresh-worker-agents-worker.sh "<ssh-destination>" \
+  2>&1 | tee /tmp/worker-refresh-profile.txt
+```
+
+Fresh-launch path:
+
+```bash
+REUSE_EXISTING_WORKER=0 START_CHILD_AGENTS=0 INSTALL_CHILD_DEPS=0 PROVISION_TRACE=1 \
+/usr/bin/time -lp ./scripts/run-worker-agents-worker.sh \
+  2>&1 | tee /tmp/worker-provision-profile.txt
+```
+
+What to inspect:
+
+- local `[trace][HH:MM:SS] ...` spans for sync, SSH readiness, prebuilt fetch, upload, and smoke-test stages
+- remote `[remote-trace][HH:MM:SS] ...` spans for extract/install/startup work on the runner
+- total wall-clock time from `/usr/bin/time -lp`
+
+Known good profiling habits:
+
+- keep `START_CHILD_AGENTS=0` unless profiling child-agent startup specifically
+- keep `INSTALL_CHILD_DEPS=0` unless profiling first-time dependency/bootstrap cost
+- use the prebuilt 9Router artifact path first; only profile clone+build fallback intentionally
+- run `./scripts/doctor-worker.sh ...` immediately after profiling to confirm the worker is still healthy
+
 ## Notes
 
 - If GitHub returns a transient `HTTP 500: Failed to run workflow dispatch`, retrying a few seconds later usually works; `scripts/ssh-runner-link.sh` retries dispatch up to 3 times.
@@ -110,6 +183,8 @@ Useful knobs:
 - Node.js was already present on the tested runner image (`node v22.23.1`, `npm 10.9.8` on July 19, 2026).
 
 ## tmate caveats
+
+Tmate is for manual inspection/debug only. It is not the default automation transport.
 
 - Treat the worker SSH endpoint as an interactive `tmate` session, not normal SSH.
 - `ssh host "command"` can fail with `Invalid command`; automation should drive an interactive shell instead.
